@@ -273,13 +273,7 @@ type APIDefinition struct {
 		AllowedAuthorizeTypes  []osin.AuthorizeRequestType `bson:"allowed_authorize_types" json:"allowed_authorize_types"`
 		AuthorizeLoginRedirect string                      `bson:"auth_login_redirect" json:"auth_login_redirect"`
 	} `bson:"oauth_meta" json:"oauth_meta"`
-	Auth struct {
-		UseParam       bool   `mapstructure:"use_param" bson:"use_param" json:"use_param"`
-		ParamName      string `mapstructure:"param_name" bson:"param_name" json:"param_name"`
-		UseCookie      bool   `mapstructure:"use_cookie" bson:"use_cookie" json:"use_cookie"`
-		CookieName     string `mapstructure:"cookie_name" bson:"cookie_name" json:"cookie_name"`
-		AuthHeaderName string `mapstructure:"auth_header_name" bson:"auth_header_name" json:"auth_header_name"`
-	} `bson:"auth" json:"auth"`
+	Auth                    Auth                 `bson:"auth" json:"auth"`
 	UseBasicAuth            bool                 `bson:"use_basic_auth" json:"use_basic_auth"`
 	EnableJWT               bool                 `bson:"enable_jwt" json:"enable_jwt"`
 	UseStandardAuth         bool                 `bson:"use_standard_auth" json:"use_standard_auth"`
@@ -354,6 +348,15 @@ type APIDefinition struct {
 	ConfigData        map[string]interface{} `bson:"config_data" json:"config_data"`
 	TagHeaders        []string               `bson:"tag_headers" json:"tag_headers"`
 	GlobalRateLimit   GlobalRateLimit        `bson:"global_rate_limit" json:"global_rate_limit"`
+	StripAuthData     bool                   `bson:"strip_auth_data" json:"strip_auth_data"`
+}
+
+type Auth struct {
+	UseParam       bool   `mapstructure:"use_param" bson:"use_param" json:"use_param"`
+	ParamName      string `mapstructure:"param_name" bson:"param_name" json:"param_name"`
+	UseCookie      bool   `mapstructure:"use_cookie" bson:"use_cookie" json:"use_cookie"`
+	CookieName     string `mapstructure:"cookie_name" bson:"cookie_name" json:"cookie_name"`
+	AuthHeaderName string `mapstructure:"auth_header_name" bson:"auth_header_name" json:"auth_header_name"`
 }
 
 type GlobalRateLimit struct {
