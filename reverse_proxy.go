@@ -28,7 +28,7 @@ import (
 	"time"
 
 	"github.com/Sirupsen/logrus"
-	cache "github.com/pmylund/go-cache"
+	"github.com/pmylund/go-cache"
 
 	"github.com/TykTechnologies/tyk/apidef"
 	"github.com/TykTechnologies/tyk/config"
@@ -235,6 +235,9 @@ func TykNewSingleHostReverseProxy(target *url.URL, spec *APISpec) *ReverseProxy 
 			req.URL.Scheme = targetToUse.Scheme
 			req.URL.Host = targetToUse.Host
 			req.URL.Path = singleJoiningSlash(targetToUse.Path, req.URL.Path)
+			if req.URL.RawPath != "" {
+				req.URL.RawPath = singleJoiningSlash(targetToUse.Path, req.URL.RawPath)
+			}
 		}
 		if !spec.Proxy.PreserveHostHeader {
 			req.Host = targetToUse.Host
@@ -248,6 +251,17 @@ func TykNewSingleHostReverseProxy(target *url.URL, spec *APISpec) *ReverseProxy 
 			// Set Tyk's own default user agent. Without
 			// this line, we would get the net/http default.
 			req.Header.Set("User-Agent", defaultUserAgent)
+		}
+
+		if config.Global.HttpServerOptions.SkipTargetPathEscaping {
+			// force RequestURI to skip escaping if API's proxy is set for this
+			// if we set opaque here it will force URL.RequestURI to skip escaping
+			if req.URL.RawPath != "" {
+				req.URL.Opaque = req.URL.RawPath
+			}
+		} else if req.URL.RawPath == req.URL.Path {
+			// this should force URL to do escaping
+			req.URL.RawPath = ""
 		}
 	}
 
@@ -425,6 +439,10 @@ func httpTransport(timeOut int, rw http.ResponseWriter, req *http.Request, p *Re
 		transport.ResponseHeaderTimeout = time.Duration(timeOut) * time.Second
 	}
 
+	if config.Global.CloseConnections {
+		transport.DisableKeepAlives = true
+	}
+
 	if IsWebsocket(req) {
 		wsTransport := &WSDialer{transport, rw, p.TLSClientConfig}
 		return wsTransport
@@ -435,10 +453,25 @@ func httpTransport(timeOut int, rw http.ResponseWriter, req *http.Request, p *Re
 
 func (p *ReverseProxy) WrappedServeHTTP(rw http.ResponseWriter, req *http.Request, withCache bool) *http.Response {
 	// 1. Check if timeouts are set for this endpoint
-	if p.TykAPISpec.HTTPTransport == nil {
+	p.TykAPISpec.Lock()
+
+	createTransport := p.TykAPISpec.HTTPTransport == nil
+
+	if !createTransport && config.Global.MaxConnTime != 0 {
+		createTransport = time.Since(p.TykAPISpec.HTTPTransportCreated) > time.Duration(config.Global.MaxConnTime)*time.Second
+	}
+
+	if createTransport {
 		_, timeout := p.CheckHardTimeoutEnforced(p.TykAPISpec, req)
 		p.TykAPISpec.HTTPTransport = httpTransport(timeout, rw, req, p)
+		p.TykAPISpec.HTTPTransportCreated = time.Now()
+	} else if IsWebsocket(req) { // check if it is an upgrade request to NEW WS-connection
+		// overwrite transport's ResponseWriter from previous upgrade request
+		// as it was already hijacked and now is being used for other connection
+		p.TykAPISpec.HTTPTransportCreated = time.Now()
+		p.TykAPISpec.HTTPTransport.(*WSDialer).RW = rw
 	}
+	p.TykAPISpec.Unlock()
 
 	ctx := req.Context()
 	if cn, ok := rw.(http.CloseNotifier); ok {
@@ -485,21 +518,21 @@ func (p *ReverseProxy) WrappedServeHTTP(rw http.ResponseWriter, req *http.Reques
 	p.Director(outreq)
 	outreq.Close = false
 
-	// Remove hop-by-hop headers listed in the "Connection" header.
-	// See RFC 2616, section 14.10.
-	if c := outreq.Header.Get("Connection"); c != "" {
-		for _, f := range strings.Split(c, ",") {
-			if f = strings.TrimSpace(f); f != "" {
-				outreq.Header.Del(f)
-			}
-		}
-	}
-
 	log.Debug("Outbound Request: ", outreq.URL.String())
+	outReqIsWebsocket := IsWebsocket(outreq)
 
 	// Do not modify outbound request headers if they are WS
-	if !IsWebsocket(outreq) {
-		// Remove hop-by-hop headers to the backend. Especially
+	if !outReqIsWebsocket {
+		// Remove hop-by-hop headers listed in the "Connection" header.
+		// See RFC 2616, section 14.10.
+		if c := outreq.Header.Get("Connection"); c != "" {
+			for _, f := range strings.Split(c, ",") {
+				if f = strings.TrimSpace(f); f != "" {
+					outreq.Header.Del(f)
+				}
+			}
+		}
+		// Remove other hop-by-hop headers to the backend. Especially
 		// important is "Connection" because we want a persistent
 		// connection, regardless of what the client sent to us.
 		for _, h := range hopHeaders {
@@ -518,12 +551,21 @@ func (p *ReverseProxy) WrappedServeHTTP(rw http.ResponseWriter, req *http.Reques
 	// Circuit breaker
 	breakerEnforced, breakerConf := p.CheckCircuitBreakerEnforced(p.TykAPISpec, req)
 
+	// set up TLS certificates for upstream if needed
+	var tlsCertificates []tls.Certificate
 	if cert := getUpstreamCertificate(outreq.Host, p.TykAPISpec); cert != nil {
-		p.TykAPISpec.HTTPTransport.(*http.Transport).TLSClientConfig.Certificates = []tls.Certificate{*cert}
-	} else {
-		p.TykAPISpec.HTTPTransport.(*http.Transport).TLSClientConfig.Certificates = nil
+		tlsCertificates = []tls.Certificate{*cert}
 	}
 
+	p.TykAPISpec.Lock()
+	if outReqIsWebsocket {
+		p.TykAPISpec.HTTPTransport.(*WSDialer).TLSClientConfig.Certificates = tlsCertificates
+	} else {
+		p.TykAPISpec.HTTPTransport.(*http.Transport).TLSClientConfig.Certificates = tlsCertificates
+	}
+	p.TykAPISpec.Unlock()
+
+	// do request round trip
 	var res *http.Response
 	var err error
 	if breakerEnforced {
@@ -750,8 +792,8 @@ func (m *maxLatencyWriter) flushLoop() {
 func (m *maxLatencyWriter) stop() { m.done <- true }
 
 func requestIP(r *http.Request) string {
-	if real := r.Header.Get("X-Real-IP"); real != "" {
-		return real
+	if realIP := r.Header.Get("X-Real-IP"); realIP != "" {
+		return realIP
 	}
 	if fw := r.Header.Get("X-Forwarded-For"); fw != "" {
 		// X-Forwarded-For has no port

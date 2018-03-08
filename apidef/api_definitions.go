@@ -2,9 +2,13 @@ package apidef
 
 import (
 	"encoding/base64"
+	"encoding/json"
+	"regexp"
 
 	"github.com/lonelycode/osin"
 	"gopkg.in/mgo.v2/bson"
+
+	"github.com/TykTechnologies/gojsonschema"
 )
 
 type AuthProviderCode string
@@ -20,6 +24,7 @@ type MiddlewareDriver string
 type IdExtractorSource string
 type IdExtractorType string
 type AuthTypeEnum string
+type RoutingTriggerOnType string
 
 const (
 	NoAction EndpointMethodAction = "no_action"
@@ -53,6 +58,11 @@ const (
 	OIDCUser      AuthTypeEnum = "oidc_user"
 	OAuthKey      AuthTypeEnum = "oauth_key"
 	UnsetAuth     AuthTypeEnum = ""
+
+	// For routing triggers
+	All    RoutingTriggerOnType = "all"
+	Any    RoutingTriggerOnType = "any"
+	Ignore RoutingTriggerOnType = ""
 )
 
 type EndpointMethodMeta struct {
@@ -69,15 +79,17 @@ type EndPointMeta struct {
 
 type RequestInputType string
 
+type TemplateData struct {
+	Input          RequestInputType `bson:"input_type" json:"input_type"`
+	Mode           TemplateMode     `bson:"template_mode" json:"template_mode"`
+	EnableSession  bool             `bson:"enable_session" json:"enable_session"`
+	TemplateSource string           `bson:"template_source" json:"template_source"`
+}
+
 type TemplateMeta struct {
-	TemplateData struct {
-		Input          RequestInputType `bson:"input_type" json:"input_type"`
-		Mode           TemplateMode     `bson:"template_mode" json:"template_mode"`
-		EnableSession  bool             `bson:"enable_session" json:"enable_session"`
-		TemplateSource string           `bson:"template_source" json:"template_source"`
-	} `bson:"template_data" json:"template_data"`
-	Path   string `bson:"path" json:"path"`
-	Method string `bson:"method" json:"method"`
+	TemplateData TemplateData `bson:"template_data" json:"template_data"`
+	Path         string       `bson:"path" json:"path"`
+	Method       string       `bson:"method" json:"method"`
 }
 
 type HeaderInjectionMeta struct {
@@ -113,11 +125,32 @@ type CircuitBreakerMeta struct {
 	ReturnToServiceAfter int     `bson:"return_to_service_after" json:"return_to_service_after"`
 }
 
+type StringRegexMap struct {
+	MatchPattern string `bson:"match_rx" json:"match_rx"`
+	matchRegex   *regexp.Regexp
+}
+
+type RoutingTriggerOptions struct {
+	HeaderMatches      map[string]StringRegexMap `bson:"header_matches" json:"header_matches"`
+	QueryValMatches    map[string]StringRegexMap `bson:"query_val_matches" json:"query_val_matches"`
+	PathPartMatches    map[string]StringRegexMap `bson:"path_part_matches" json:"path_part_matches"`
+	SessionMetaMatches map[string]StringRegexMap `bson:"session_meta_matches" json:"session_meta_matches"`
+	PayloadMatches     StringRegexMap            `bson:"payload_matches" json:"payload_matches"`
+}
+
+type RoutingTrigger struct {
+	On        RoutingTriggerOnType  `bson:"on" json:"on"`
+	Options   RoutingTriggerOptions `bson:"options" json:"options"`
+	RewriteTo string                `bson:"rewrite_to" json:"rewrite_to"`
+}
+
 type URLRewriteMeta struct {
-	Path         string `bson:"path" json:"path"`
-	Method       string `bson:"method" json:"method"`
-	MatchPattern string `bson:"match_pattern" json:"match_pattern"`
-	RewriteTo    string `bson:"rewrite_to" json:"rewrite_to"`
+	Path         string           `bson:"path" json:"path"`
+	Method       string           `bson:"method" json:"method"`
+	MatchPattern string           `bson:"match_pattern" json:"match_pattern"`
+	RewriteTo    string           `bson:"rewrite_to" json:"rewrite_to"`
+	Triggers     []RoutingTrigger `bson:"triggers" json:"triggers"`
+	MatchRegexp  *regexp.Regexp
 }
 
 type VirtualMeta struct {
@@ -133,6 +166,16 @@ type MethodTransformMeta struct {
 	Path     string `bson:"path" json:"path"`
 	Method   string `bson:"method" json:"method"`
 	ToMethod string `bson:"to_method" json:"to_method"`
+}
+
+type ValidatePathMeta struct {
+	Path        string                  `bson:"path" json:"path"`
+	Method      string                  `bson:"method" json:"method"`
+	Schema      map[string]interface{}  `bson:"schema" json:"schema"`
+	SchemaB64   string                  `bson:"schema_b64" json:"schema_b64,omitempty"`
+	SchemaCache gojsonschema.JSONLoader `bson:"-" json:"-"`
+	// Allows override of default 422 Unprocessible Entity response code for validation errors.
+	ErrorResponseCode int `bson:"error_response_code" json:"error_response_code"`
 }
 
 type ExtendedPathsSet struct {
@@ -152,6 +195,7 @@ type ExtendedPathsSet struct {
 	MethodTransforms        []MethodTransformMeta `bson:"method_transforms" json:"method_transforms,omitempty"`
 	TrackEndpoints          []TrackEndpointMeta   `bson:"track_endpoints" json:"track_endpoints,omitempty"`
 	DoNotTrackEndpoints     []TrackEndpointMeta   `bson:"do_not_track_endpoints" json:"do_not_track_endpoints,omitempty"`
+	ValidateJSON            []ValidatePathMeta    `bson:"validate_json" json:"validate_json,omitempty"`
 }
 
 type VersionInfo struct {
@@ -215,11 +259,12 @@ type MiddlewareSection struct {
 }
 
 type CacheOptions struct {
-	CacheTimeout               int64 `bson:"cache_timeout" json:"cache_timeout"`
-	EnableCache                bool  `bson:"enable_cache" json:"enable_cache"`
-	CacheAllSafeRequests       bool  `bson:"cache_all_safe_requests" json:"cache_all_safe_requests"`
-	CacheOnlyResponseCodes     []int `bson:"cache_response_codes" json:"cache_response_codes"`
-	EnableUpstreamCacheControl bool  `bson:"enable_upstream_cache_control" json:"enable_upstream_cache_control"`
+	CacheTimeout               int64  `bson:"cache_timeout" json:"cache_timeout"`
+	EnableCache                bool   `bson:"enable_cache" json:"enable_cache"`
+	CacheAllSafeRequests       bool   `bson:"cache_all_safe_requests" json:"cache_all_safe_requests"`
+	CacheOnlyResponseCodes     []int  `bson:"cache_response_codes" json:"cache_response_codes"`
+	EnableUpstreamCacheControl bool   `bson:"enable_upstream_cache_control" json:"enable_upstream_cache_control"`
+	CacheControlTTLHeader      string `bson:"cache_control_ttl_header" json:"cache_control_ttl_header"`
 }
 
 type ResponseProcessor struct {
@@ -273,14 +318,7 @@ type APIDefinition struct {
 		AllowedAuthorizeTypes  []osin.AuthorizeRequestType `bson:"allowed_authorize_types" json:"allowed_authorize_types"`
 		AuthorizeLoginRedirect string                      `bson:"auth_login_redirect" json:"auth_login_redirect"`
 	} `bson:"oauth_meta" json:"oauth_meta"`
-	Auth struct {
-		UseParam       bool   `mapstructure:"use_param" bson:"use_param" json:"use_param"`
-		ParamName      string `mapstructure:"param_name" bson:"param_name" json:"param_name"`
-		UseCookie      bool   `mapstructure:"use_cookie" bson:"use_cookie" json:"use_cookie"`
-		CookieName     string `mapstructure:"cookie_name" bson:"cookie_name" json:"cookie_name"`
-		AuthHeaderName string `mapstructure:"auth_header_name" bson:"auth_header_name" json:"auth_header_name"`
-		UseCertificate bool   `mapstructure:"use_certificate" bson:"use_certificate" json:"use_certificate"`
-	} `bson:"auth" json:"auth"`
+	Auth                    Auth                 `bson:"auth" json:"auth"`
 	UseBasicAuth            bool                 `bson:"use_basic_auth" json:"use_basic_auth"`
 	UseMutualTLSAuth        bool                 `bson:"use_mutual_tls_auth" json:"use_mutual_tls_auth"`
 	ClientCertificates      []string             `bson:"client_certificates" json:"client_certificates"`
@@ -302,8 +340,9 @@ type APIDefinition struct {
 		Key      string `bson:"key" json:"key"`
 	} `bson:"definition" json:"definition"`
 	VersionData struct {
-		NotVersioned bool                   `bson:"not_versioned" json:"not_versioned"`
-		Versions     map[string]VersionInfo `bson:"versions" json:"versions"`
+		NotVersioned   bool                   `bson:"not_versioned" json:"not_versioned"`
+		DefaultVersion string                 `bson:"default_version" json:"default_version"`
+		Versions       map[string]VersionInfo `bson:"versions" json:"versions"`
 	} `bson:"version_data" json:"version_data"`
 	UptimeTests struct {
 		CheckList []HostCheckObject `bson:"check_list" json:"check_list"`
@@ -358,6 +397,16 @@ type APIDefinition struct {
 	ConfigData        map[string]interface{} `bson:"config_data" json:"config_data"`
 	TagHeaders        []string               `bson:"tag_headers" json:"tag_headers"`
 	GlobalRateLimit   GlobalRateLimit        `bson:"global_rate_limit" json:"global_rate_limit"`
+	StripAuthData     bool                   `bson:"strip_auth_data" json:"strip_auth_data"`
+}
+
+type Auth struct {
+	UseParam       bool   `mapstructure:"use_param" bson:"use_param" json:"use_param"`
+	ParamName      string `mapstructure:"param_name" bson:"param_name" json:"param_name"`
+	UseCookie      bool   `mapstructure:"use_cookie" bson:"use_cookie" json:"use_cookie"`
+	CookieName     string `mapstructure:"cookie_name" bson:"cookie_name" json:"cookie_name"`
+	AuthHeaderName string `mapstructure:"auth_header_name" bson:"auth_header_name" json:"auth_header_name"`
+	UseCertificate bool   `mapstructure:"use_certificate" bson:"use_certificate" json:"use_certificate"`
 }
 
 type GlobalRateLimit struct {
@@ -374,28 +423,81 @@ type BundleManifest struct {
 
 // Clean will URL encode map[string]struct variables for saving
 func (a *APIDefinition) EncodeForDB() {
-	new_version := make(map[string]VersionInfo)
+	newVersion := make(map[string]VersionInfo)
 	for k, v := range a.VersionData.Versions {
 		newK := base64.StdEncoding.EncodeToString([]byte(k))
 		v.Name = newK
-		new_version[newK] = v
+		newVersion[newK] = v
 	}
+	a.VersionData.Versions = newVersion
 
-	a.VersionData.Versions = new_version
+	newUpstreamCerts := make(map[string]string)
+	for domain, cert := range a.UpstreamCertificates {
+		newD := base64.StdEncoding.EncodeToString([]byte(domain))
+		newUpstreamCerts[newD] = cert
+	}
+	a.UpstreamCertificates = newUpstreamCerts
+
+	for i, version := range a.VersionData.Versions {
+		for j, oldSchema := range version.ExtendedPaths.ValidateJSON {
+
+			jsBytes, _ := json.Marshal(oldSchema.Schema)
+			oldSchema.SchemaB64 = base64.StdEncoding.EncodeToString(jsBytes)
+			oldSchema.Schema = nil
+
+			a.VersionData.Versions[i].ExtendedPaths.ValidateJSON[j] = oldSchema
+		}
+	}
 }
 
 func (a *APIDefinition) DecodeFromDB() {
-	new_version := make(map[string]VersionInfo)
+	newVersion := make(map[string]VersionInfo)
 	for k, v := range a.VersionData.Versions {
 		newK, err := base64.StdEncoding.DecodeString(k)
 		if err != nil {
 			log.Error("Couldn't Decode, leaving as it may be legacy...")
-			new_version[k] = v
+			newVersion[k] = v
 		} else {
 			v.Name = string(newK)
-			new_version[string(newK)] = v
+			newVersion[string(newK)] = v
 		}
 	}
+	a.VersionData.Versions = newVersion
 
-	a.VersionData.Versions = new_version
+	newUpstreamCerts := make(map[string]string)
+	for domain, cert := range a.UpstreamCertificates {
+		newD, err := base64.StdEncoding.DecodeString(domain)
+		if err != nil {
+			log.Error("Couldn't Decode, leaving as it may be legacy...")
+			newUpstreamCerts[domain] = cert
+		} else {
+			newUpstreamCerts[string(newD)] = cert
+		}
+	}
+	a.UpstreamCertificates = newUpstreamCerts
+
+	for i, version := range a.VersionData.Versions {
+		for j, oldSchema := range version.ExtendedPaths.ValidateJSON {
+			jsBytes, _ := base64.StdEncoding.DecodeString(oldSchema.SchemaB64)
+
+			json.Unmarshal(jsBytes, &oldSchema.Schema)
+			oldSchema.SchemaB64 = ""
+
+			a.VersionData.Versions[i].ExtendedPaths.ValidateJSON[j] = oldSchema
+		}
+	}
+}
+
+func (s *StringRegexMap) Check(value string) string {
+	return s.matchRegex.FindString(value)
+}
+
+func (s *StringRegexMap) Init() error {
+	var err error
+	if s.matchRegex, err = regexp.Compile(s.MatchPattern); err != nil {
+		log.WithError(err).WithField("MatchPattern", s.MatchPattern).
+			Error("Could not compile regexp for StringRegexMap")
+		return err
+	}
+	return nil
 }

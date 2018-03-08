@@ -95,10 +95,16 @@ func (l *LDAPStorageHandler) GetRawKey(filter string) (string, error) {
 	return "", nil
 }
 
+func (l *LDAPStorageHandler) SetExp(cn string, exp int64) error {
+	log.Warning("Not implementated")
+	return nil
+}
+
 func (l *LDAPStorageHandler) GetExp(cn string) (int64, error) {
 	log.Warning("Not implementated")
 	return 0, nil
 }
+
 func (l *LDAPStorageHandler) GetKeys(filter string) []string {
 	log.Warning("Not implementated")
 	s := []string{}
@@ -183,4 +189,23 @@ func (l LDAPStorageHandler) GetAndDeleteSet(keyName string) []interface{} {
 func (l LDAPStorageHandler) DeleteScanMatch(pattern string) bool {
 	log.Error("Not implemented")
 	return false
+}
+
+func (l LDAPStorageHandler) GetKeyPrefix() string {
+	log.Error("Not implemented")
+	return ""
+}
+
+func (l LDAPStorageHandler) AddToSortedSet(keyName, value string, score float64) {
+	log.Error("Not implemented")
+}
+
+func (l LDAPStorageHandler) GetSortedSetRange(keyName, scoreFrom, scoreTo string) ([]string, []float64, error) {
+	log.Error("Not implemented")
+	return nil, nil, nil
+}
+
+func (l LDAPStorageHandler) RemoveSortedSetRange(keyName, scoreFrom, scoreTo string) error {
+	log.Error("Not implemented")
+	return nil
 }

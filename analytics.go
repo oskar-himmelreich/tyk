@@ -17,8 +17,8 @@ import (
 // AnalyticsRecord encodes the details of a request
 type AnalyticsRecord struct {
 	Method        string
-	Path          string
-	RawPath       string
+	Path          string // HTTP path, can be overriden by "track path" plugin
+	RawPath       string // Original HTTP path
 	ContentLength int64
 	UserAgent     string
 	Day           int
@@ -34,8 +34,8 @@ type AnalyticsRecord struct {
 	OrgID         string
 	OauthID       string
 	RequestTime   int64
-	RawRequest    string
-	RawResponse   string
+	RawRequest    string // Base64 encoded request data (if detailed recording turned on)
+	RawResponse   string // ^ same but for response
 	IPAddress     string
 	Geo           GeoData
 	Tags          []string
@@ -178,11 +178,11 @@ func (r *RedisAnalyticsHandler) Init() {
 
 // RecordHit will store an AnalyticsRecord in Redis
 func (r *RedisAnalyticsHandler) RecordHit(record AnalyticsRecord) error {
-
 	r.AnalyticsPool.SendWork(func() {
 		// If we are obfuscating API Keys, store the hashed representation (config check handled in hashing function)
 		record.APIKey = storage.HashKey(record.APIKey)
 
+		configMu.Lock()
 		if config.Global.SlaveOptions.UseRPC {
 			// Extend tag list to include this data so wecan segment by node if necessary
 			record.Tags = append(record.Tags, "tyk-hybrid-rpc")
@@ -192,6 +192,7 @@ func (r *RedisAnalyticsHandler) RecordHit(record AnalyticsRecord) error {
 			// Extend tag list to include this data so wecan segment by node if necessary
 			record.Tags = append(record.Tags, config.Global.DBAppConfOptions.Tags...)
 		}
+		configMu.Unlock()
 
 		// Lets add some metadata
 		if record.APIKey != "" {

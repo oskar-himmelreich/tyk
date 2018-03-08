@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -45,7 +44,7 @@ func (e *BaseExtractor) ExtractAndCheck(r *http.Request) (sessionID string, retu
 // PostProcess sets context variables and updates the storage.
 func (e *BaseExtractor) PostProcess(r *http.Request, session *user.SessionState, sessionID string) {
 	sessionLifetime := session.Lifetime(e.Spec.SessionLifetime)
-	e.Spec.SessionManager.UpdateSession(sessionID, session, sessionLifetime)
+	e.Spec.SessionManager.UpdateSession(sessionID, session, sessionLifetime, false)
 
 	ctxSetSession(r, session)
 	ctxSetAuthToken(r, sessionID)
@@ -63,12 +62,14 @@ func (e *BaseExtractor) ExtractHeader(r *http.Request) (headerValue string, err 
 
 // ExtractForm is used when a FormSource is specified.
 func (e *BaseExtractor) ExtractForm(r *http.Request, paramName string) (formValue string, err error) {
-	r.ParseForm()
+	copiedRequest := copyRequest(r)
+	copiedRequest.ParseForm()
+
 	if paramName == "" {
 		return "", errors.New("no form param name set")
 	}
 
-	values := r.Form[paramName]
+	values := copiedRequest.Form[paramName]
 	if len(values) == 0 {
 		return "", errors.New("no form value")
 	}
@@ -82,10 +83,8 @@ func (e *BaseExtractor) ExtractBody(r *http.Request) (bodyValue string, err erro
 
 // Error is a helper for logging the extractor errors. It always returns HTTP 400 (so we don't expose any details).
 func (e *BaseExtractor) Error(r *http.Request, err error, message string) (returnOverrides ReturnOverrides) {
-	log.WithFields(logrus.Fields{
-		"path":   r.URL.Path,
-		"origin": requestIP(r),
-	}).Info("Extractor error: ", message, ", ", err)
+	logEntry := getLogEntryForRequest(r, "", nil)
+	logEntry.Info("Extractor error: ", message, ", ", err)
 
 	return ReturnOverrides{
 		ResponseCode:  400,
@@ -142,10 +141,7 @@ func (e *ValueExtractor) ExtractAndCheck(r *http.Request) (sessionID string, ret
 	previousSession, keyExists := e.BaseMid.CheckSessionAndIdentityForValidKey(sessionID)
 
 	if keyExists {
-		lastUpdated, _ := strconv.Atoi(previousSession.LastUpdated)
-
-		deadlineTs := int64(lastUpdated) + previousSession.IdExtractorDeadline
-		if deadlineTs > time.Now().Unix() {
+		if previousSession.IdExtractorDeadline > time.Now().Unix() {
 			e.PostProcess(r, &previousSession, sessionID)
 			returnOverrides = ReturnOverrides{
 				ResponseCode: 200,
@@ -205,17 +201,18 @@ func (e *RegexExtractor) ExtractAndCheck(r *http.Request) (SessionID string, ret
 
 	regexOutput := expression.FindAllString(extractorOutput, -1)
 
+	if config.RegexMatchIndex > len(regexOutput)-1 {
+		returnOverrides = e.Error(r, fmt.Errorf("Can't find regexp match group"), "RegexExtractor error")
+		return SessionID, returnOverrides
+	}
+
 	SessionID = e.GenerateSessionID(regexOutput[config.RegexMatchIndex], e.BaseMid)
 
 	previousSession, keyExists := e.BaseMid.CheckSessionAndIdentityForValidKey(SessionID)
 
 	if keyExists {
 
-		lastUpdated, _ := strconv.Atoi(previousSession.LastUpdated)
-
-		deadlineTs := int64(lastUpdated) + previousSession.IdExtractorDeadline
-
-		if deadlineTs > time.Now().Unix() {
+		if previousSession.IdExtractorDeadline > time.Now().Unix() {
 			e.PostProcess(r, &previousSession, SessionID)
 			returnOverrides = ReturnOverrides{
 				ResponseCode: 200,
@@ -285,12 +282,7 @@ func (e *XPathExtractor) ExtractAndCheck(r *http.Request) (SessionID string, ret
 
 	previousSession, keyExists := e.BaseMid.CheckSessionAndIdentityForValidKey(SessionID)
 	if keyExists {
-
-		lastUpdated, _ := strconv.Atoi(previousSession.LastUpdated)
-
-		deadlineTs := int64(lastUpdated) + previousSession.IdExtractorDeadline
-
-		if deadlineTs > time.Now().Unix() {
+		if previousSession.IdExtractorDeadline > time.Now().Unix() {
 			e.PostProcess(r, &previousSession, SessionID)
 			returnOverrides = ReturnOverrides{
 				ResponseCode: 200,

@@ -7,13 +7,20 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Sirupsen/logrus"
 	"github.com/garyburd/redigo/redis"
 	"github.com/lonelycode/redigocluster/rediscluster"
+	"github.com/satori/go.uuid"
 
 	"github.com/TykTechnologies/tyk/config"
 )
 
 // ------------------- REDIS CLUSTER STORAGE MANAGER -------------------------------
+
+const (
+	waitStorageRetriesNum      = 5
+	waitStorageRetriesInterval = 1 * time.Second
+)
 
 var (
 	redisSingletonMu           sync.RWMutex
@@ -26,6 +33,62 @@ type RedisCluster struct {
 	KeyPrefix string
 	HashKeys  bool
 	IsCache   bool
+}
+
+func clusterConnectionIsOpen(cluster *RedisCluster) bool {
+	testKey := "redis-test-" + uuid.NewV4().String()
+	// set test key
+	if err := cluster.SetKey(testKey, "test", 1); err != nil {
+		return false
+	}
+	// get test key
+	if _, err := cluster.GetKey(testKey); err != nil {
+		return false
+	}
+	return true
+}
+
+// IsConnected waits with retries until Redis connection pools are connected
+func IsConnected() bool {
+	// create temporary ones to access singletons
+	testClusters := []*RedisCluster{
+		{},
+	}
+	if config.Global.EnableSeperateCacheStore {
+		testClusters = append(testClusters, &RedisCluster{IsCache: true})
+	}
+	for _, cluster := range testClusters {
+		cluster.Connect()
+	}
+
+	// wait for connection pools with retries
+	retryNum := 0
+	for {
+		if retryNum == waitStorageRetriesNum {
+			log.Error("Waiting for Redis connection pools failed")
+			return false
+		}
+
+		// check that redis is available
+		var redisIsReady bool
+		for _, cluster := range testClusters {
+			redisIsReady = cluster.singleton() != nil && clusterConnectionIsOpen(cluster)
+			if !redisIsReady {
+				break
+			}
+		}
+		if redisIsReady {
+			break
+		}
+
+		// sleep before next check
+		log.WithField("currRetry", retryNum).Info("Waiting for Redis connection pools to be ready")
+		time.Sleep(waitStorageRetriesInterval)
+		retryNum++
+	}
+	log.WithField("currRetry", retryNum).Info("Redis connection pools are ready after number of retires")
+
+	return true
 }
 
 func NewRedisClusterPool(isCache bool) *rediscluster.RedisCluster {
@@ -176,7 +239,14 @@ func (r RedisCluster) GetExp(keyName string) (int64, error) {
 		return 0, ErrKeyNotFound
 	}
 	return value, nil
+}
 
+func (r RedisCluster) SetExp(keyName string, timeout int64) error {
+	_, err := r.singleton().Do("EXPIRE", r.fixKey(keyName), timeout)
+	if err != nil {
+		log.Error("Could not EXPIRE key: ", err)
+	}
+	return err
 }
 
 // SetKey will create (or update) a key value in the store
@@ -187,9 +257,7 @@ func (r RedisCluster) SetKey(keyName, session string, timeout int64) error {
 	r.ensureConnection()
 	_, err := r.singleton().Do("SET", r.fixKey(keyName), session)
 	if timeout > 0 {
-		_, err := r.singleton().Do("EXPIRE", r.fixKey(keyName), timeout)
-		if err != nil {
-			log.Error("Could not EXPIRE key: ", err)
+		if err := r.SetExp(keyName, timeout); err != nil {
 			return err
 		}
 	}
@@ -249,7 +317,11 @@ func (r RedisCluster) IncrememntWithExpire(keyName string, expire int64) int64 {
 // GetKeys will return all keys according to the filter (filter is a prefix - e.g. tyk.keys.*)
 func (r RedisCluster) GetKeys(filter string) []string {
 	r.ensureConnection()
-	searchStr := r.KeyPrefix + r.hashKey(filter) + "*"
+	filterHash := ""
+	if filter != "" {
+		filterHash = r.hashKey(filter)
+	}
+	searchStr := r.KeyPrefix + filterHash + "*"
 	sessionsInterface, err := r.singleton().Do("KEYS", searchStr)
 	if err != nil {
 		log.Error("Error trying to get all keys: ", err)
@@ -266,7 +338,11 @@ func (r RedisCluster) GetKeys(filter string) []string {
 // GetKeysAndValuesWithFilter will return all keys and their values with a filter
 func (r RedisCluster) GetKeysAndValuesWithFilter(filter string) map[string]string {
 	r.ensureConnection()
-	searchStr := r.KeyPrefix + r.hashKey(filter) + "*"
+	filterHash := ""
+	if filter != "" {
+		filterHash = r.hashKey(filter)
+	}
+	searchStr := r.KeyPrefix + filterHash + "*"
 	log.Debug("[STORE] Getting list by: ", searchStr)
 	sessionsInterface, err := r.singleton().Do("KEYS", searchStr)
 	if err != nil {
@@ -603,4 +679,75 @@ func (r RedisCluster) SetRollingWindow(keyName string, per int64, value_override
 	log.Debug("Returned: ", intVal)
 
 	return intVal, redVal[1].([]interface{})
+}
+
+// GetPrefix returns storage key prefix
+func (r RedisCluster) GetKeyPrefix() string {
+	return r.KeyPrefix
+}
+
+// AddToSortedSet adds value with given score to sorted set identified by keyName
+func (r RedisCluster) AddToSortedSet(keyName, value string, score float64) {
+	fixedKey := r.fixKey(keyName)
+	logEntry := logrus.Fields{
+		"keyName":  keyName,
+		"fixedKey": fixedKey,
+	}
+	log.WithFields(logEntry).Debug("Pushing raw key to sorted set")
+
+	r.ensureConnection()
+	if _, err := r.singleton().Do("ZADD", fixedKey, score, value); err != nil {
+		log.WithFields(logEntry).WithError(err).Error("ZADD command failed")
+	}
+}
+
+// GetSortedSetRange gets range of elements of sorted set identified by keyName
+func (r RedisCluster) GetSortedSetRange(keyName, scoreFrom, scoreTo string) ([]string, []float64, error) {
+	fixedKey := r.fixKey(keyName)
+	logEntry := logrus.Fields{
+		"keyName":   keyName,
+		"fixedKey":  fixedKey,
+		"scoreFrom": scoreFrom,
+		"scoreTo":   scoreTo,
+	}
+	log.WithFields(logEntry).Debug("Getting sorted set range")
+
+	values, err := redis.Strings(r.singleton().Do("ZRANGEBYSCORE", fixedKey, scoreFrom, scoreTo, "WITHSCORES"))
+	if err != nil {
+		log.WithFields(logEntry).WithError(err).Error("ZRANGEBYSCORE command failed")
+		return nil, nil, err
+	}
+
+	if len(values) == 0 {
+		return nil, nil, nil
+	}
+
+	elements := make([]string, len(values)/2)
+	scores := make([]float64, len(values)/2)
+
+	for i := 0; i < len(elements); i++ {
+		elements[i] = values[i*2]
+		scores[i], _ = strconv.ParseFloat(values[i*2+1], 64)
+	}
+
+	return elements, scores, nil
+}
+
+// RemoveSortedSetRange removes range of elements from sorted set identified by keyName
+func (r RedisCluster) RemoveSortedSetRange(keyName, scoreFrom, scoreTo string) error {
+	fixedKey := r.fixKey(keyName)
+	logEntry := logrus.Fields{
+		"keyName":   keyName,
+		"fixedKey":  fixedKey,
+		"scoreFrom": scoreFrom,
+		"scoreTo":   scoreTo,
+	}
+	log.WithFields(logEntry).Debug("Removing sorted set range")
+
+	if _, err := r.singleton().Do("ZREMRANGEBYSCORE", fixedKey, scoreFrom, scoreTo); err != nil {
+		log.WithFields(logEntry).WithError(err).Error("ZREMRANGEBYSCORE command failed")
+		return err
+	}
+
+	return nil
 }

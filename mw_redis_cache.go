@@ -37,15 +37,7 @@ func (m *RedisCacheMiddleware) Init() {
 }
 
 func (m *RedisCacheMiddleware) EnabledForSpec() bool {
-	if !m.Spec.CacheOptions.EnableCache {
-		return false
-	}
-	for _, version := range m.Spec.VersionData.Versions {
-		if len(version.ExtendedPaths.Cached) > 0 {
-			return true
-		}
-	}
-	return false
+	return m.Spec.CacheOptions.EnableCache
 }
 
 func (m *RedisCacheMiddleware) CreateCheckSum(req *http.Request, keyName string) string {
@@ -113,15 +105,16 @@ func (m *RedisCacheMiddleware) ProcessRequest(w http.ResponseWriter, r *http.Req
 	}
 
 	var stat RequestStatus
-	var isVirtual bool
+
+	_, versionPaths, _, _ := m.Spec.Version(r)
+	isVirtual, _ := m.Spec.CheckSpecMatchesStatus(r, versionPaths, VirtualPath)
+
 	// Lets see if we can throw a sledgehammer at this
 	if m.Spec.CacheOptions.CacheAllSafeRequests {
 		stat = StatusCached
 	} else {
 		// New request checker, more targeted, less likely to fail
-		_, versionPaths, _, _ := m.Spec.Version(r)
 		found, _ := m.Spec.CheckSpecMatchesStatus(r, versionPaths, Cached)
-		isVirtual, _ = m.Spec.CheckSpecMatchesStatus(r, versionPaths, VirtualPath)
 		if found {
 			stat = StatusCached
 		}
@@ -144,8 +137,8 @@ func (m *RedisCacheMiddleware) ProcessRequest(w http.ResponseWriter, r *http.Req
 	}
 
 	key := m.CreateCheckSum(r, token)
-	retBlob, found := m.CacheStore.GetKey(key)
-	if found != nil {
+	retBlob, err := m.CacheStore.GetKey(key)
+	if err != nil {
 		log.Debug("Cache enabled, but record not found")
 		// Pass through to proxy AND CACHE RESULT
 
@@ -191,8 +184,13 @@ func (m *RedisCacheMiddleware) ProcessRequest(w http.ResponseWriter, r *http.Req
 				log.Warning("Upstream cache action not found, not caching")
 				cacheThisRequest = false
 			}
-			// Do we override TTL?
-			ttl := reqVal.Header.Get(upstreamCacheTTLHeader)
+
+			cacheTTLHeader := upstreamCacheTTLHeader
+			if m.Spec.CacheOptions.CacheControlTTLHeader != "" {
+				cacheTTLHeader = m.Spec.CacheOptions.CacheControlTTLHeader
+			}
+
+			ttl := reqVal.Header.Get(cacheTTLHeader)
 			if ttl != "" {
 				log.Debug("TTL Set upstream")
 				cacheAsInt, err := strconv.Atoi(ttl)
@@ -215,8 +213,8 @@ func (m *RedisCacheMiddleware) ProcessRequest(w http.ResponseWriter, r *http.Req
 			go m.CacheStore.SetKey(key, toStore, cacheTTL)
 
 		}
-		return nil, mwStatusRespond
 
+		return nil, mwStatusRespond
 	}
 
 	cachedData, timestamp, err := m.decodePayload(retBlob)
@@ -252,9 +250,20 @@ func (m *RedisCacheMiddleware) ProcessRequest(w http.ResponseWriter, r *http.Req
 		w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(int(session.QuotaRemaining)))
 		w.Header().Set("X-RateLimit-Reset", strconv.Itoa(int(session.QuotaRenews)))
 	}
-	w.Header().Add("x-tyk-cached-response", "1")
+	w.Header().Set("x-tyk-cached-response", "1")
+
+	if reqEtag := r.Header.Get("If-None-Match"); reqEtag != "" {
+		if respEtag := newRes.Header.Get("Etag"); respEtag != "" {
+			if strings.Contains(reqEtag, respEtag) {
+				newRes.StatusCode = http.StatusNotModified
+			}
+		}
+	}
+
 	w.WriteHeader(newRes.StatusCode)
-	m.Proxy.CopyResponse(w, newRes.Body)
+	if newRes.StatusCode != http.StatusNotModified {
+		m.Proxy.CopyResponse(w, newRes.Body)
+	}
 
 	// Record analytics
 	if !m.Spec.DoNotTrack {

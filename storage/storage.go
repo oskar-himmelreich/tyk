@@ -22,6 +22,7 @@ type Handler interface {
 	GetRawKey(string) (string, error)
 	SetKey(string, string, int64) error // Second input string is expected to be a JSON object (user.SessionState)
 	SetRawKey(string, string, int64) error
+	SetExp(string, int64) error   // Set key expiration
 	GetExp(string) (int64, error) // Returns expiry of a key
 	GetKeys(string) []string
 	DeleteKey(string) bool
@@ -39,6 +40,10 @@ type Handler interface {
 	GetAndDeleteSet(string) []interface{}
 	RemoveFromSet(string, string)
 	DeleteScanMatch(string) bool
+	GetKeyPrefix() string
+	AddToSortedSet(string, string, float64)
+	GetSortedSetRange(string, string, string) ([]string, []float64, error)
+	RemoveSortedSetRange(string, string, string) error
 }
 
 func HashStr(in string) string {
