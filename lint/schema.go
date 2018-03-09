@@ -92,6 +92,9 @@ const confSchema = `{
 			"pool_size": {
 				"type": "integer"
 			},
+			"storage_expiration_time": {
+				"type": "integer"
+			},
 			"type": {
 				"type": "string"
 			}
@@ -194,6 +197,9 @@ const confSchema = `{
 			}
 		}
 	},
+	"version_header":{
+		"type": "string"
+	},
 	"disable_dashboard_zeroconf": {
 		"type": "boolean"
 	},
@@ -217,6 +223,9 @@ const confSchema = `{
 	},
 	"enable_jsvm": {
 		"type": "boolean"
+	},
+	"jsvm_timeout": {
+		"type": "integer"
 	},
 	"enable_non_transactional_rate_limiter": {
 		"type": "boolean"
@@ -328,6 +337,9 @@ const confSchema = `{
 			"skip_url_cleaning": {
 				"type": "boolean"
 			},
+			"skip_target_path_escaping": {
+				"type": "boolean"
+			},
 			"ssl_insecure_skip_verify": {
 				"type": "boolean"
 			},
@@ -341,6 +353,12 @@ const confSchema = `{
 				"type": "integer"
 			},
 			"ssl_certificates": {
+				"type": ["array", "null"],
+				"items": {
+					"type": "string"
+				}
+			},
+			"ssl_ciphers":{
 				"type": ["array", "null"],
 				"items": {
 					"type": "string"
@@ -387,6 +405,9 @@ const confSchema = `{
 		"type": "boolean"
 	},
 	"max_idle_connections_per_host": {
+		"type": "integer"
+	},
+	"max_conn_time": {
 		"type": "integer"
 	},
 	"middleware_path": {
@@ -443,6 +464,9 @@ const confSchema = `{
 		"type": "integer"
 	},
 	"oauth_token_expire": {
+		"type": "integer"
+	},
+	"oauth_token_expired_retain_period": {
 		"type": "integer"
 	},
 	"optimisations_use_async_session_write": {
@@ -537,6 +561,9 @@ const confSchema = `{
 			},
 			"use_ssl": {
 				"type": "boolean"
+			},
+			"rpc_pool_size": {
+				"type": "integer"
 			}
 		}
 	},
@@ -658,6 +685,24 @@ const confSchema = `{
 				}
 			}
 		}
+	},
+	"enable_key_logging": {
+		"type": "boolean"
+	},
+	"newrelic": {
+		"type": ["object", "null"],
+		"additionalProperties": false,
+		"properties": {
+			"app_name": {
+				"type": "string"
+			},
+			"license_key": {
+				"type": "string"
+			}
+		}
+	},
+	"enable_hashed_keys_listing": {
+		"type": "boolean"
 	}
 }
 }`

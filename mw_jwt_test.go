@@ -1,97 +1,15 @@
 package main
 
 import (
-	"net/http"
-	"net/http/httptest"
-	"net/url"
+	"encoding/base64"
 	"testing"
 	"time"
 
 	"github.com/dgrijalva/jwt-go"
-	"github.com/justinas/alice"
 
+	"github.com/TykTechnologies/tyk/test"
 	"github.com/TykTechnologies/tyk/user"
 )
-
-const jwtDef = `{
-	"api_id": "76",
-	"org_id": "default",
-	"enable_jwt": true,
-	"auth": {"auth_header_name": "authorization"},
-	"version_data": {
-		"not_versioned": true,
-		"versions": {
-			"v1": {"name": "v1"}
-		}
-	},
-	"proxy": {
-		"listen_path": "/jwt_test",
-		"target_url": "` + testHttpAny + `"
-	}
-}`
-
-const jwtWithJWKDef = `{
-	"api_id": "76",
-	"org_id": "default",
-	"enable_jwt": true,
-	"jwt_source": "` + testHttpJWK + `",
-	"jwt_signing_method": "RSA",
-	"jwt_identity_base_field": "user_id",
-	"jwt_policy_field_name": "policy_id",
-	"auth": {"auth_header_name": "authorization"},
-	"version_data": {
-		"not_versioned": true,
-		"versions": {
-			"v1": {"name": "v1"}
-		}
-	},
-	"proxy": {
-		"listen_path": "/jwt_test",
-		"target_url": "` + testHttpAny + `"
-	}
-}`
-
-const jwtWithCentralDef = `{
-	"api_id": "76",
-	"org_id": "default",
-	"enable_jwt": true,
-	"jwt_source": "Ci0tLS0tQkVHSU4gUFVCTElDIEtFWS0tLS0tCk1JSUJJakFOQmdrcWhraUc5dzBCQVFFRkFBT0NBUThBTUlJQkNnS0NBUUVBeXFaNHJ3S0Y4cUNFeFM3a3BZNGMKbkphLzM3Rk1rSk5rYWxaM091c2xMQjBvUkw4VDRjOTRrZEY0YWVOelNGa1NlMm45OUlCSTZTc2w3OXZiZk1aYgordDA2TDBROTRrKy9QMzd4NysvUkpaaWZmNHkxVkdqcm5ybk1JMml1OWw0aUJCUll6Tm1HNmVibHJvRU1NV2xnCms1dHlzSGd4QjU5Q1NOSWNEOWdxazFoeDRuL0ZnT212S3NmUWdXSE5sUFNEVFJjV0dXR2hCMi9YZ05WWUcycE8KbFF4QVBxTGhCSGVxR1RYQmJQZkdGOWNIeml4cHNQcjZHdGJ6UHdoc1EvOGJQeG9KN2hkZm4rcnp6dGtzM2Q2KwpIV1VSY3lOVExSZTBtalhqamVlOVo2K2daK0grZlM0cG5QOXRxVDdJZ1U2ZVBVV1Rwam9pUHRMZXhnc0FhL2N0CmpRSURBUUFCCi0tLS0tRU5EIFBVQkxJQyBLRVktLS0tLQo=",
-	"jwt_signing_method": "RSA",
-	"jwt_identity_base_field": "user_id",
-	"jwt_policy_field_name": "policy_id",
-	"auth": {"auth_header_name": "authorization"},
-	"version_data": {
-		"not_versioned": true,
-		"versions": {
-			"v1": {"name": "v1"}
-		}
-	},
-	"proxy": {
-		"listen_path": "/jwt_test",
-		"target_url": "` + testHttpAny + `"
-	}
-}`
-
-const jwtWithCentralDefNoPolicyBaseField = `{
-	"api_id": "76",
-	"org_id": "default",
-	"enable_jwt": true,
-	"jwt_source": "Ci0tLS0tQkVHSU4gUFVCTElDIEtFWS0tLS0tCk1JSUJJakFOQmdrcWhraUc5dzBCQVFFRkFBT0NBUThBTUlJQkNnS0NBUUVBeXFaNHJ3S0Y4cUNFeFM3a3BZNGMKbkphLzM3Rk1rSk5rYWxaM091c2xMQjBvUkw4VDRjOTRrZEY0YWVOelNGa1NlMm45OUlCSTZTc2w3OXZiZk1aYgordDA2TDBROTRrKy9QMzd4NysvUkpaaWZmNHkxVkdqcm5ybk1JMml1OWw0aUJCUll6Tm1HNmVibHJvRU1NV2xnCms1dHlzSGd4QjU5Q1NOSWNEOWdxazFoeDRuL0ZnT212S3NmUWdXSE5sUFNEVFJjV0dXR2hCMi9YZ05WWUcycE8KbFF4QVBxTGhCSGVxR1RYQmJQZkdGOWNIeml4cHNQcjZHdGJ6UHdoc1EvOGJQeG9KN2hkZm4rcnp6dGtzM2Q2KwpIV1VSY3lOVExSZTBtalhqamVlOVo2K2daK0grZlM0cG5QOXRxVDdJZ1U2ZVBVV1Rwam9pUHRMZXhnc0FhL2N0CmpRSURBUUFCCi0tLS0tRU5EIFBVQkxJQyBLRVktLS0tLQo=",
-	"jwt_signing_method": "RSA",
-	"jwt_identity_base_field": "user_id",
-	"jwt_client_base_field": "azp",
-	"auth": {"auth_header_name": "authorization"},
-	"version_data": {
-		"not_versioned": true,
-		"versions": {
-			"v1": {"name": "v1"}
-		}
-	},
-	"proxy": {
-		"listen_path": "/jwt_test",
-		"target_url": "` + testHttpAny + `"
-	}
-}`
 
 const jwtSecret = "9879879878787878"
 
@@ -159,534 +77,656 @@ func createJWTSessionWithRSA() *user.SessionState {
 	return session
 }
 
-func createJWTSessionWithRSAWithPolicy() *user.SessionState {
+func createJWTSessionWithRSAWithPolicy(policyID string) *user.SessionState {
 	session := createJWTSessionWithRSA()
-	session.SetPolicies("987654321")
+	session.SetPolicies(policyID)
 	return session
 }
 
-func getJWTChain(spec *APISpec) http.Handler {
-	remote, _ := url.Parse(testHttpAny)
-	proxy := TykNewSingleHostReverseProxy(remote, spec)
-	proxyHandler := ProxyHandler(proxy, spec)
-	baseMid := BaseMiddleware{spec, proxy}
-	chain := alice.New(mwList(
-		&IPWhiteListMiddleware{baseMid},
-		&JWTMiddleware{baseMid},
-		&VersionCheck{BaseMiddleware: baseMid},
-		&KeyExpired{baseMid},
-		&AccessRightsCheck{baseMid},
-		&RateLimitAndQuotaCheck{baseMid},
-	)...).Then(proxyHandler)
-	return chain
+// JWTSessionHMAC
+
+func prepareJWTSessionHMAC(tb testing.TB) string {
+	spec := buildAndLoadAPI(func(spec *APISpec) {
+		spec.UseKeylessAccess = false
+		spec.JWTSigningMethod = "hmac"
+		spec.EnableJWT = true
+		spec.Proxy.ListenPath = "/"
+	})[0]
+
+	session := createJWTSession()
+	tokenKID := testKey(tb, "token")
+	spec.SessionManager.UpdateSession(tokenKID, session, 60, false)
+
+	jwtToken := createJWKTokenHMAC(func(t *jwt.Token) {
+		t.Header["kid"] = tokenKID
+		t.Claims.(jwt.MapClaims)["foo"] = "bar"
+		t.Claims.(jwt.MapClaims)["exp"] = time.Now().Add(time.Hour * 72).Unix()
+	})
+
+	return jwtToken
 }
 
 func TestJWTSessionHMAC(t *testing.T) {
-	tokenKID := testKey(t, "token")
-	spec := createSpecTest(t, jwtDef)
-	spec.JWTSigningMethod = "hmac"
-	session := createJWTSession()
-	spec.SessionManager.UpdateSession(tokenKID, session, 60)
+	ts := newTykTestServer()
+	defer ts.Close()
 
-	// Create the token
-	token := jwt.New(jwt.SigningMethodHS256)
-	// Set the token ID
-	token.Header["kid"] = tokenKID
-	// Set some claims
-	token.Claims.(jwt.MapClaims)["foo"] = "bar"
-	token.Claims.(jwt.MapClaims)["exp"] = time.Now().Add(time.Hour * 72).Unix()
-	// Sign and get the complete encoded token as a string
-	tokenString, err := token.SignedString([]byte(jwtSecret))
-	if err != nil {
-		t.Fatal("Couldn't create JWT token: ", err)
-	}
+	jwtToken := prepareJWTSessionHMAC(t)
 
-	recorder := httptest.NewRecorder()
-	req := testReq(t, "GET", "/jwt_test/", nil)
-	req.Header.Set("authorization", tokenString)
+	authHeaders := map[string]string{"authorization": jwtToken}
+	t.Run("Request with valid JWT signed with HMAC", func(t *testing.T) {
+		ts.Run(t, test.TestCase{
+			Headers: authHeaders, Code: 200,
+		})
+	})
+}
 
-	chain := getJWTChain(spec)
-	chain.ServeHTTP(recorder, req)
+func BenchmarkJWTSessionHMAC(b *testing.B) {
+	b.ReportAllocs()
 
-	if recorder.Code != 200 {
-		t.Error("Initial request failed with non-200 code, should have gone through!: \n", recorder.Code)
+	ts := newTykTestServer()
+	defer ts.Close()
+
+	jwtToken := prepareJWTSessionHMAC(b)
+
+	authHeaders := map[string]string{"authorization": jwtToken}
+	for i := 0; i < b.N; i++ {
+		ts.Run(b, test.TestCase{
+			Headers: authHeaders, Code: 200,
+		})
 	}
 }
 
-func TestJWTSessionRSA(t *testing.T) {
-	tokenKID := testKey(t, "token")
-	spec := createSpecTest(t, jwtDef)
-	spec.JWTSigningMethod = "rsa"
+// JWTSessionRSA
+func prepareJWTSessionRSA(tb testing.TB) (*APISpec, string) {
+	spec := buildAndLoadAPI(func(spec *APISpec) {
+		spec.UseKeylessAccess = false
+		spec.JWTSigningMethod = "rsa"
+		spec.EnableJWT = true
+		spec.Proxy.ListenPath = "/"
+	})[0]
+
 	session := createJWTSessionWithRSA()
-	spec.SessionManager.UpdateSession(tokenKID, session, 60)
+	tokenKID := testKey(tb, "token")
+	spec.SessionManager.UpdateSession(tokenKID, session, 60, false)
 
-	// Create the token
-	token := jwt.New(jwt.GetSigningMethod("RS512"))
-	// Set the token ID
-	token.Header["kid"] = tokenKID
-	// Set some claims
-	token.Claims.(jwt.MapClaims)["foo"] = "bar"
-	token.Claims.(jwt.MapClaims)["exp"] = time.Now().Add(time.Hour * 72).Unix()
-	// Sign and get the complete encoded token as a string
-	signKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(jwtRSAPrivKey))
-	if err != nil {
-		t.Fatal("Couldn't extract private key: ", err)
-	}
-	tokenString, err := token.SignedString(signKey)
-	if err != nil {
-		t.Fatal("Couldn't create JWT token: ", err)
-	}
+	jwtToken := createJWKToken(func(t *jwt.Token) {
+		t.Header["kid"] = tokenKID
+		t.Claims.(jwt.MapClaims)["foo"] = "bar"
+		t.Claims.(jwt.MapClaims)["exp"] = time.Now().Add(time.Hour * 72).Unix()
+	})
 
-	recorder := httptest.NewRecorder()
-	req := testReq(t, "GET", "/jwt_test/", nil)
-	req.Header.Set("authorization", tokenString)
+	return spec, jwtToken
+}
 
-	chain := getJWTChain(spec)
-	chain.ServeHTTP(recorder, req)
+func TestJWTSessionRSA(t *testing.T) {
+	ts := newTykTestServer()
+	defer ts.Close()
 
-	if recorder.Code != 200 {
-		t.Error("Initial request failed with non-200 code, should have gone through!: \n", recorder.Code)
+	_, jwtToken := prepareJWTSessionRSA(t)
+
+	authHeaders := map[string]string{"authorization": jwtToken}
+	t.Run("Request with valid JWT", func(t *testing.T) {
+		ts.Run(t, test.TestCase{
+			Headers: authHeaders, Code: 200,
+		})
+	})
+}
+
+func BenchmarkJWTSessionRSA(b *testing.B) {
+	b.ReportAllocs()
+
+	ts := newTykTestServer()
+	defer ts.Close()
+
+	_, jwtToken := prepareJWTSessionRSA(b)
+
+	authHeaders := map[string]string{"authorization": jwtToken}
+	for i := 0; i < b.N; i++ {
+		ts.Run(b, test.TestCase{
+			Headers: authHeaders, Code: 200,
+		})
 	}
 }
 
 func TestJWTSessionFailRSA_EmptyJWT(t *testing.T) {
-	tokenKID := testKey(t, "token")
-	spec := createSpecTest(t, jwtDef)
-	spec.JWTSigningMethod = "rsa"
-	session := createJWTSessionWithRSA()
-	spec.SessionManager.UpdateSession(tokenKID, session, 60)
+	ts := newTykTestServer()
+	defer ts.Close()
 
-	// Create the token
-	token := jwt.New(jwt.GetSigningMethod("RS512"))
-	// Set the token ID
-	token.Header["kid"] = tokenKID
-	// Set some claims
-	token.Claims.(jwt.MapClaims)["foo"] = "bar"
-	token.Claims.(jwt.MapClaims)["exp"] = time.Now().Add(time.Hour * 72).Unix()
+	prepareJWTSessionRSA(t)
 
-	recorder := httptest.NewRecorder()
-	req := testReq(t, "GET", "/jwt_test/", nil)
-
-	// Make it empty
-	req.Header.Set("authorization", "")
-
-	chain := getJWTChain(spec)
-	chain.ServeHTTP(recorder, req)
-
-	if recorder.Code != 400 {
-		t.Error("Initial request failed with non-400 code, was: \n", recorder.Code)
-	}
+	authHeaders := map[string]string{"authorization": ""}
+	t.Run("Request with empty authorization header", func(t *testing.T) {
+		ts.Run(t, test.TestCase{
+			Headers: authHeaders, Code: 400,
+		})
+	})
 }
 
 func TestJWTSessionFailRSA_NoAuthHeader(t *testing.T) {
-	tokenKID := testKey(t, "token")
-	spec := createSpecTest(t, jwtDef)
-	spec.JWTSigningMethod = "rsa"
-	session := createJWTSessionWithRSA()
-	spec.SessionManager.UpdateSession(tokenKID, session, 60)
+	ts := newTykTestServer()
+	defer ts.Close()
 
-	// Create the token
-	token := jwt.New(jwt.GetSigningMethod("RS512"))
-	// Set the token ID
-	token.Header["kid"] = tokenKID
-	// Set some claims
-	token.Claims.(jwt.MapClaims)["foo"] = "bar"
-	token.Claims.(jwt.MapClaims)["exp"] = time.Now().Add(time.Hour * 72).Unix()
+	prepareJWTSessionRSA(t)
 
-	recorder := httptest.NewRecorder()
-	req := testReq(t, "GET", "/jwt_test/", nil)
-
-	chain := getJWTChain(spec)
-	chain.ServeHTTP(recorder, req)
-
-	if recorder.Code != 400 {
-		t.Error("Initial request failed with non-400 code, was: \n", recorder.Code)
-	}
+	authHeaders := map[string]string{}
+	t.Run("Request without authorization header", func(t *testing.T) {
+		ts.Run(t, test.TestCase{
+			Headers: authHeaders, Code: 400,
+		})
+	})
 }
 
 func TestJWTSessionFailRSA_MalformedJWT(t *testing.T) {
-	tokenKID := testKey(t, "token")
-	spec := createSpecTest(t, jwtDef)
-	spec.JWTSigningMethod = "rsa"
-	session := createJWTSessionWithRSA()
-	spec.SessionManager.UpdateSession(tokenKID, session, 60)
+	ts := newTykTestServer()
+	defer ts.Close()
 
-	// Create the token
-	token := jwt.New(jwt.GetSigningMethod("RS512"))
-	// Set the token ID
-	token.Header["kid"] = tokenKID
-	// Set some claims
-	token.Claims.(jwt.MapClaims)["foo"] = "bar"
-	token.Claims.(jwt.MapClaims)["exp"] = time.Now().Add(time.Hour * 72).Unix()
-	// Sign and get the complete encoded token as a string
-	signKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(jwtRSAPrivKey))
-	if err != nil {
-		t.Fatal("Couldn't extract private key: ", err)
-	}
-	tokenString, err := token.SignedString(signKey)
-	if err != nil {
-		t.Fatal("Couldn't create JWT token: ", err)
-	}
+	_, jwtToken := prepareJWTSessionRSA(t)
 
-	recorder := httptest.NewRecorder()
-	req := testReq(t, "GET", "/jwt_test/", nil)
-
-	// Make it empty
-	req.Header.Set("authorization", tokenString+"ajhdkjhsdfkjashdkajshdkajhsdkajhsd")
-
-	chain := getJWTChain(spec)
-	chain.ServeHTTP(recorder, req)
-
-	if recorder.Code != 403 {
-		t.Error("Initial request failed with non-403 code, was: \n", recorder.Code)
-	}
+	authHeaders := map[string]string{"authorization": jwtToken + "ajhdkjhsdfkjashdkajshdkajhsdkajhsd"}
+	t.Run("Request with malformed JWT", func(t *testing.T) {
+		ts.Run(t, test.TestCase{
+			Headers: authHeaders, Code: 403,
+		})
+	})
 }
 
 func TestJWTSessionFailRSA_MalformedJWT_NOTRACK(t *testing.T) {
-	tokenKID := testKey(t, "token")
-	spec := createSpecTest(t, jwtDef)
+	ts := newTykTestServer()
+	defer ts.Close()
+
+	spec, jwtToken := prepareJWTSessionRSA(t)
 	spec.DoNotTrack = true
-	spec.JWTSigningMethod = "rsa"
-	session := createJWTSessionWithRSA()
-	spec.SessionManager.UpdateSession(tokenKID, session, 60)
 
-	// Create the token
-	token := jwt.New(jwt.GetSigningMethod("RS512"))
-	// Set the token ID
-	token.Header["kid"] = tokenKID
-	// Set some claims
-	token.Claims.(jwt.MapClaims)["foo"] = "bar"
-	token.Claims.(jwt.MapClaims)["exp"] = time.Now().Add(time.Hour * 72).Unix()
-	// Sign and get the complete encoded token as a string
-	signKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(jwtRSAPrivKey))
-	if err != nil {
-		t.Fatal("Couldn't extract private key: ", err)
-	}
-	tokenString, err := token.SignedString(signKey)
-	if err != nil {
-		t.Fatal("Couldn't create JWT token: ", err)
-	}
-
-	recorder := httptest.NewRecorder()
-	req := testReq(t, "GET", "/jwt_test/", nil)
-
-	// Make it empty
-	req.Header.Set("authorization", tokenString+"ajhdkjhsdfkjashdkajshdkajhsdkajhsd")
-
-	chain := getJWTChain(spec)
-	chain.ServeHTTP(recorder, req)
-
-	if recorder.Code != 403 {
-		t.Error("Initial request failed with non-403 code, was: \n", recorder.Code)
-	}
+	authHeaders := map[string]string{"authorization": jwtToken + "ajhdkjhsdfkjashdkajshdkajhsdkajhsd"}
+	t.Run("Request with malformed JWT no track", func(t *testing.T) {
+		ts.Run(t, test.TestCase{
+			Headers: authHeaders, Code: 403,
+		})
+	})
 }
 
 func TestJWTSessionFailRSA_WrongJWT(t *testing.T) {
-	tokenKID := testKey(t, "token")
-	spec := createSpecTest(t, jwtDef)
-	spec.JWTSigningMethod = "rsa"
+	ts := newTykTestServer()
+	defer ts.Close()
+
+	prepareJWTSessionRSA(t)
+
+	authHeaders := map[string]string{"authorization": "123"}
+	t.Run("Request with invalid JWT", func(t *testing.T) {
+		ts.Run(t, test.TestCase{
+			Headers: authHeaders, Code: 403,
+		})
+	})
+}
+
+// TestJWTSessionRSABearer
+
+func prepareJWTSessionRSABearer(tb testing.TB) string {
+	spec := buildAndLoadAPI(func(spec *APISpec) {
+		spec.UseKeylessAccess = false
+		spec.JWTSigningMethod = "rsa"
+		spec.EnableJWT = true
+		spec.Proxy.ListenPath = "/"
+	})[0]
+
 	session := createJWTSessionWithRSA()
-	spec.SessionManager.UpdateSession(tokenKID, session, 60)
+	tokenKID := testKey(tb, "token")
+	spec.SessionManager.UpdateSession(tokenKID, session, 60, false)
 
-	// Create the token
-	token := jwt.New(jwt.GetSigningMethod("RS512"))
-	// Set the token ID
-	token.Header["kid"] = tokenKID
-	// Set some claims
-	token.Claims.(jwt.MapClaims)["foo"] = "bar"
-	token.Claims.(jwt.MapClaims)["exp"] = time.Now().Add(time.Hour * 72).Unix()
+	jwtToken := createJWKToken(func(t *jwt.Token) {
+		t.Header["kid"] = tokenKID
+		t.Claims.(jwt.MapClaims)["foo"] = "bar"
+		t.Claims.(jwt.MapClaims)["exp"] = time.Now().Add(time.Hour * 72).Unix()
+	})
 
-	recorder := httptest.NewRecorder()
-	req := testReq(t, "GET", "/jwt_test/", nil)
-
-	// Make it empty
-	req.Header.Set("authorization", "123")
-
-	chain := getJWTChain(spec)
-	chain.ServeHTTP(recorder, req)
-
-	if recorder.Code != 403 {
-		t.Error("Initial request failed with non-403 code, was: \n", recorder.Code)
-	}
+	return jwtToken
 }
 
 func TestJWTSessionRSABearer(t *testing.T) {
-	tokenKID := testKey(t, "token")
-	spec := createSpecTest(t, jwtDef)
-	spec.JWTSigningMethod = "rsa"
-	session := createJWTSessionWithRSA()
-	spec.SessionManager.ResetQuota(tokenKID, session)
-	spec.SessionManager.UpdateSession(tokenKID, session, 60)
+	ts := newTykTestServer()
+	defer ts.Close()
 
-	// Create the token
-	token := jwt.New(jwt.GetSigningMethod("RS512"))
-	// Set the token ID
-	token.Header["kid"] = tokenKID
-	// Set some claims
-	token.Claims.(jwt.MapClaims)["foo"] = "bar"
-	token.Claims.(jwt.MapClaims)["exp"] = time.Now().Add(time.Hour * 72).Unix()
-	// Sign and get the complete encoded token as a string
-	signKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(jwtRSAPrivKey))
-	if err != nil {
-		t.Fatal("Couldn't extract private key: ", err)
-	}
-	tokenString, err := token.SignedString(signKey)
-	if err != nil {
-		t.Fatal("Couldn't create JWT token: ", err)
-	}
+	jwtToken := prepareJWTSessionRSABearer(t)
 
-	recorder := httptest.NewRecorder()
-	req := testReq(t, "GET", "/jwt_test/", nil)
-	req.Header.Set("authorization", "Bearer "+tokenString)
+	authHeaders := map[string]string{"authorization": "Bearer " + jwtToken}
+	t.Run("Request with valid Bearer", func(t *testing.T) {
+		ts.Run(t, test.TestCase{
+			Headers: authHeaders, Code: 200,
+		})
+	})
+}
 
-	chain := getJWTChain(spec)
-	chain.ServeHTTP(recorder, req)
+func BenchmarkJWTSessionRSABearer(b *testing.B) {
+	b.ReportAllocs()
 
-	if recorder.Code != 200 {
-		t.Error("Initial request failed with non-200 code, should have gone through!: \n", recorder.Code)
+	ts := newTykTestServer()
+	defer ts.Close()
+
+	jwtToken := prepareJWTSessionRSABearer(b)
+
+	authHeaders := map[string]string{"authorization": "Bearer " + jwtToken}
+
+	for i := 0; i < b.N; i++ {
+		ts.Run(b, test.TestCase{
+			Headers: authHeaders, Code: 200,
+		})
 	}
 }
 
 func TestJWTSessionRSABearerInvalid(t *testing.T) {
-	tokenKID := testKey(t, "token")
-	spec := createSpecTest(t, jwtDef)
-	spec.JWTSigningMethod = "rsa"
-	session := createJWTSessionWithRSA()
-	spec.SessionManager.UpdateSession(tokenKID, session, 60)
+	ts := newTykTestServer()
+	defer ts.Close()
 
-	// Create the token
-	token := jwt.New(jwt.GetSigningMethod("RS512"))
-	// Set the token ID
-	token.Header["kid"] = tokenKID
-	// Set some claims
-	token.Claims.(jwt.MapClaims)["foo"] = "bar"
-	token.Claims.(jwt.MapClaims)["exp"] = time.Now().Add(time.Hour * 72).Unix()
-	// Sign and get the complete encoded token as a string
-	signKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(jwtRSAPrivKey))
-	if err != nil {
-		t.Fatal("Couldn't extract private key: ", err)
-	}
-	tokenString, err := token.SignedString(signKey)
-	if err != nil {
-		t.Fatal("Couldn't create JWT token: ", err)
-	}
+	jwtToken := prepareJWTSessionRSABearer(t)
 
-	recorder := httptest.NewRecorder()
-	req := testReq(t, "GET", "/jwt_test/", nil)
-	// add a colon here
-	req.Header.Set("authorization", "Bearer: "+tokenString)
+	authHeaders := map[string]string{"authorization": "Bearer: " + jwtToken} // extra ":"
+	t.Run("Request with invalid Bearer", func(t *testing.T) {
+		ts.Run(t, test.TestCase{
+			Headers: authHeaders, Code: 403,
+		})
+	})
+}
 
-	chain := getJWTChain(spec)
-	chain.ServeHTTP(recorder, req)
+// JWTSessionRSAWithRawSourceOnWithClientID
 
-	if recorder.Code != 403 {
-		t.Error("Initial request failed with !=403 code, should have failed!: \n", recorder.Code)
-	}
+func prepareJWTSessionRSAWithRawSourceOnWithClientID() string {
+	spec := buildAndLoadAPI(func(spec *APISpec) {
+		spec.APIID = "777888"
+		spec.OrgID = "default"
+		spec.UseKeylessAccess = false
+		spec.EnableJWT = true
+		spec.JWTSigningMethod = "rsa"
+		spec.JWTSource = base64.StdEncoding.EncodeToString([]byte(jwtRSAPubKey))
+		spec.JWTIdentityBaseField = "user_id"
+		spec.JWTClientIDBaseField = "azp"
+		spec.Proxy.ListenPath = "/"
+	})[0]
+
+	policyID := createPolicy(func(p *user.Policy) {
+		p.OrgID = "default"
+		p.AccessRights = map[string]user.AccessDefinition{
+			spec.APIID: {
+				APIName:  spec.APIDefinition.Name,
+				APIID:    spec.APIID,
+				Versions: []string{"default"},
+			},
+		}
+	})
+
+	tokenID := "1234567891010101"
+	session := createJWTSessionWithRSAWithPolicy(policyID)
+
+	spec.SessionManager.ResetQuota(tokenID, session)
+	spec.SessionManager.UpdateSession(tokenID, session, 60, false)
+
+	jwtToken := createJWKToken(func(t *jwt.Token) {
+		t.Header["kid"] = "12345"
+		t.Claims.(jwt.MapClaims)["foo"] = "bar"
+		t.Claims.(jwt.MapClaims)["user_id"] = "user"
+		t.Claims.(jwt.MapClaims)["azp"] = tokenID
+		t.Claims.(jwt.MapClaims)["exp"] = time.Now().Add(time.Hour * 72).Unix()
+	})
+
+	return jwtToken
 }
 
 func TestJWTSessionRSAWithRawSourceOnWithClientID(t *testing.T) {
-	spec := createSpecTest(t, jwtWithCentralDefNoPolicyBaseField)
-	spec.JWTSigningMethod = "rsa"
+	ts := newTykTestServer()
+	defer ts.Close()
 
-	tokenID := "1234567891010101"
-	session := createJWTSessionWithRSAWithPolicy()
-	spec.SessionManager.ResetQuota(tokenID, session)
-	spec.SessionManager.UpdateSession(tokenID, session, 60)
+	jwtToken := prepareJWTSessionRSAWithRawSourceOnWithClientID()
+	authHeaders := map[string]string{"authorization": jwtToken}
 
-	policiesMu.Lock()
-	policiesByID["987654321"] = user.Policy{
-		ID:               "987654321",
-		OrgID:            "default",
-		Rate:             1000.0,
-		Per:              1.0,
-		QuotaMax:         -1,
-		QuotaRenewalRate: -1,
-		AccessRights: map[string]user.AccessDefinition{"76": {
-			APIName:  "Test",
-			APIID:    "76",
-			Versions: []string{"default"},
-		}},
-		Active:       true,
-		KeyExpiresIn: 60,
-	}
-	policiesMu.Unlock()
+	t.Run("Initial request with no policy base field in JWT", func(t *testing.T) {
+		ts.Run(t, test.TestCase{
+			Headers: authHeaders, Code: 200,
+		})
+	})
+}
 
-	// Create the token
-	token := jwt.New(jwt.GetSigningMethod("RS512"))
-	// Set some claims
-	token.Claims.(jwt.MapClaims)["foo"] = "bar"
-	token.Claims.(jwt.MapClaims)["user_id"] = testKey(t, "token")
-	token.Claims.(jwt.MapClaims)["azp"] = tokenID
-	token.Claims.(jwt.MapClaims)["exp"] = time.Now().Add(time.Hour * 72).Unix()
-	// Sign and get the complete encoded token as a string
-	signKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(jwtRSAPrivKey))
-	if err != nil {
-		t.Fatal("Couldn't extract private key: ", err)
-	}
-	tokenString, err := token.SignedString(signKey)
-	if err != nil {
-		t.Fatal("Couldn't create JWT token: ", err)
-	}
+func BenchmarkJWTSessionRSAWithRawSourceOnWithClientID(b *testing.B) {
+	b.ReportAllocs()
 
-	recorder := httptest.NewRecorder()
-	req := testReq(t, "GET", "/jwt_test/", nil)
-	// add a colon here
-	req.Header.Set("authorization", "Bearer "+tokenString)
+	ts := newTykTestServer()
+	defer ts.Close()
 
-	chain := getJWTChain(spec)
-	chain.ServeHTTP(recorder, req)
+	jwtToken := prepareJWTSessionRSAWithRawSourceOnWithClientID()
+	authHeaders := map[string]string{"authorization": jwtToken}
 
-	if recorder.Code != 200 {
-		t.Error("Initial request failed with non-200 code, should have passed!: ", recorder.Code)
+	for i := 0; i < b.N; i++ {
+		ts.Run(b, test.TestCase{
+			Headers: authHeaders, Code: 200,
+		})
 	}
 }
 
+// JWTSessionRSAWithRawSource
+
+func prepareJWTSessionRSAWithRawSource() string {
+	buildAndLoadAPI(func(spec *APISpec) {
+		spec.UseKeylessAccess = false
+		spec.EnableJWT = true
+		spec.JWTSigningMethod = "rsa"
+		spec.JWTSource = base64.StdEncoding.EncodeToString([]byte(jwtRSAPubKey))
+		spec.JWTIdentityBaseField = "user_id"
+		spec.JWTPolicyFieldName = "policy_id"
+		spec.Proxy.ListenPath = "/"
+	})
+
+	pID := createPolicy()
+
+	jwtToken := createJWKToken(func(t *jwt.Token) {
+		t.Header["kid"] = "12345"
+		t.Claims.(jwt.MapClaims)["foo"] = "bar"
+		t.Claims.(jwt.MapClaims)["user_id"] = "user"
+		t.Claims.(jwt.MapClaims)["policy_id"] = pID
+		t.Claims.(jwt.MapClaims)["exp"] = time.Now().Add(time.Hour * 72).Unix()
+	})
+
+	return jwtToken
+}
+
 func TestJWTSessionRSAWithRawSource(t *testing.T) {
-	spec := createSpecTest(t, jwtWithCentralDef)
-	spec.JWTSigningMethod = "rsa"
+	ts := newTykTestServer()
+	defer ts.Close()
 
-	policiesMu.Lock()
-	policiesByID["987654321"] = user.Policy{
-		ID:               "987654321",
-		OrgID:            "default",
-		Rate:             1000.0,
-		Per:              1.0,
-		QuotaMax:         -1,
-		QuotaRenewalRate: -1,
-		AccessRights:     map[string]user.AccessDefinition{},
-		Active:           true,
-		KeyExpiresIn:     60,
-	}
-	policiesMu.Unlock()
+	jwtToken := prepareJWTSessionRSAWithRawSource()
 
-	// Create the token
-	token := jwt.New(jwt.GetSigningMethod("RS512"))
-	// Set the token ID
-	token.Header["kid"] = "12345"
-	// Set some claims
-	token.Claims.(jwt.MapClaims)["foo"] = "bar"
-	token.Claims.(jwt.MapClaims)["user_id"] = testKey(t, "token")
-	token.Claims.(jwt.MapClaims)["policy_id"] = "987654321"
-	token.Claims.(jwt.MapClaims)["exp"] = time.Now().Add(time.Hour * 72).Unix()
-	// Sign and get the complete encoded token as a string
-	signKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(jwtRSAPrivKey))
-	if err != nil {
-		t.Fatal("Couldn't extract private key: ", err)
-	}
-	tokenString, err := token.SignedString(signKey)
-	if err != nil {
-		t.Fatal("Couldn't create JWT token: ", err)
-	}
+	authHeaders := map[string]string{"authorization": jwtToken}
+	t.Run("Initial request with invalid policy", func(t *testing.T) {
+		ts.Run(t, test.TestCase{
+			Headers: authHeaders, Code: 200,
+		})
+	})
+}
 
-	recorder := httptest.NewRecorder()
-	req := testReq(t, "GET", "/jwt_test/", nil)
-	// add a colon here
-	req.Header.Set("authorization", "Bearer "+tokenString)
+func BenchmarkJWTSessionRSAWithRawSource(b *testing.B) {
+	b.ReportAllocs()
 
-	chain := getJWTChain(spec)
-	chain.ServeHTTP(recorder, req)
+	ts := newTykTestServer()
+	defer ts.Close()
 
-	if recorder.Code != 200 {
-		t.Error("Initial request failed with non-200 code, should have passed!: ", recorder.Code)
+	jwtToken := prepareJWTSessionRSAWithRawSource()
+
+	authHeaders := map[string]string{"authorization": jwtToken}
+
+	for i := 0; i < b.N; i++ {
+		ts.Run(
+			b,
+			test.TestCase{
+				Headers: authHeaders,
+				Code:    200,
+			},
+		)
 	}
 }
 
 func TestJWTSessionRSAWithRawSourceInvalidPolicyID(t *testing.T) {
-	spec := createSpecTest(t, jwtWithCentralDef)
-	spec.JWTSigningMethod = "rsa"
+	ts := newTykTestServer()
+	defer ts.Close()
 
-	policiesMu.Lock()
-	policiesByID["987654321"] = user.Policy{
-		ID:               "987654321",
-		OrgID:            "default",
-		Rate:             1000.0,
-		Per:              1.0,
-		QuotaMax:         -1,
-		QuotaRenewalRate: -1,
-		AccessRights:     map[string]user.AccessDefinition{},
-		Active:           true,
-		KeyExpiresIn:     60,
-	}
-	policiesMu.Unlock()
+	spec := buildAPI(func(spec *APISpec) {
+		spec.UseKeylessAccess = false
+		spec.EnableJWT = true
+		spec.JWTSigningMethod = "rsa"
+		spec.JWTSource = base64.StdEncoding.EncodeToString([]byte(jwtRSAPubKey))
+		spec.JWTIdentityBaseField = "user_id"
+		spec.JWTPolicyFieldName = "policy_id"
+		spec.Proxy.ListenPath = "/"
+	})[0]
 
-	// Create the token
-	token := jwt.New(jwt.GetSigningMethod("RS512"))
-	// Set the token ID
-	token.Header["kid"] = "12345"
-	// Set some claims
-	token.Claims.(jwt.MapClaims)["foo"] = "bar"
-	token.Claims.(jwt.MapClaims)["user_id"] = testKey(t, "token")
-	token.Claims.(jwt.MapClaims)["policy_id"] = "1234567898978788"
-	token.Claims.(jwt.MapClaims)["exp"] = time.Now().Add(time.Hour * 72).Unix()
-	// Sign and get the complete encoded token as a string
-	signKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(jwtRSAPrivKey))
-	if err != nil {
-		t.Fatal("Couldn't extract private key: ", err)
-	}
-	tokenString, err := token.SignedString(signKey)
-	if err != nil {
-		t.Fatal("Couldn't create JWT token: ", err)
-	}
+	loadAPI(spec)
 
-	recorder := httptest.NewRecorder()
-	req := testReq(t, "GET", "/jwt_test/", nil)
-	// add a colon here
-	req.Header.Set("authorization", "Bearer "+tokenString)
+	createPolicy()
 
-	chain := getJWTChain(spec)
-	chain.ServeHTTP(recorder, req)
+	jwtToken := createJWKToken(func(t *jwt.Token) {
+		t.Header["kid"] = "12345"
+		t.Claims.(jwt.MapClaims)["foo"] = "bar"
+		t.Claims.(jwt.MapClaims)["user_id"] = "user"
+		t.Claims.(jwt.MapClaims)["policy_id"] = "abcxyz"
+		t.Claims.(jwt.MapClaims)["exp"] = time.Now().Add(time.Hour * 72).Unix()
+	})
 
-	if recorder.Code != 403 {
-		t.Error("Initial request failed with non-403 code, should have failed!: ", recorder.Code)
-	}
+	authHeaders := map[string]string{"authorization": jwtToken}
+	t.Run("Initial request with invalid policy", func(t *testing.T) {
+		ts.Run(t, test.TestCase{
+			Headers: authHeaders, Code: 403,
+		})
+	})
+}
+
+func TestJWTExistingSessionRSAWithRawSourceInvalidPolicyID(t *testing.T) {
+	ts := newTykTestServer()
+	defer ts.Close()
+
+	spec := buildAPI(func(spec *APISpec) {
+		spec.UseKeylessAccess = false
+		spec.EnableJWT = true
+		spec.JWTSigningMethod = "rsa"
+		spec.JWTSource = base64.StdEncoding.EncodeToString([]byte(jwtRSAPubKey))
+		spec.JWTIdentityBaseField = "user_id"
+		spec.JWTPolicyFieldName = "policy_id"
+		spec.Proxy.ListenPath = "/"
+	})[0]
+
+	loadAPI(spec)
+
+	p1ID := createPolicy()
+
+	jwtToken := createJWKToken(func(t *jwt.Token) {
+		t.Header["kid"] = "12345"
+		t.Claims.(jwt.MapClaims)["foo"] = "bar"
+		t.Claims.(jwt.MapClaims)["user_id"] = "user"
+		t.Claims.(jwt.MapClaims)["policy_id"] = p1ID
+		t.Claims.(jwt.MapClaims)["exp"] = time.Now().Add(time.Hour * 72).Unix()
+	})
+
+	authHeaders := map[string]string{"authorization": jwtToken}
+	t.Run("Initial request with valid policy", func(t *testing.T) {
+		ts.Run(t, test.TestCase{
+			Headers: authHeaders, Code: 200,
+		})
+	})
+
+	// put in JWT invalid policy ID and do request again
+	jwtTokenInvalidPolicy := createJWKToken(func(t *jwt.Token) {
+		t.Header["kid"] = "12345"
+		t.Claims.(jwt.MapClaims)["foo"] = "bar"
+		t.Claims.(jwt.MapClaims)["user_id"] = "user"
+		t.Claims.(jwt.MapClaims)["policy_id"] = "abcdef"
+		t.Claims.(jwt.MapClaims)["exp"] = time.Now().Add(time.Hour * 72).Unix()
+	})
+
+	authHeaders = map[string]string{"authorization": jwtTokenInvalidPolicy}
+	t.Run("Request with invalid policy in JWT", func(t *testing.T) {
+		ts.Run(t, test.TestCase{
+			Headers: authHeaders, Code: 403,
+		})
+	})
+}
+
+func TestJWTExistingSessionRSAWithRawSourcePolicyIDChanged(t *testing.T) {
+	ts := newTykTestServer()
+	defer ts.Close()
+
+	spec := buildAPI(func(spec *APISpec) {
+		spec.UseKeylessAccess = false
+		spec.EnableJWT = true
+		spec.JWTSigningMethod = "rsa"
+		spec.JWTSource = base64.StdEncoding.EncodeToString([]byte(jwtRSAPubKey))
+		spec.JWTIdentityBaseField = "user_id"
+		spec.JWTPolicyFieldName = "policy_id"
+		spec.Proxy.ListenPath = "/"
+	})[0]
+
+	loadAPI(spec)
+
+	p1ID := createPolicy()
+	p2ID := createPolicy()
+
+	jwtToken := createJWKToken(func(t *jwt.Token) {
+		t.Header["kid"] = "12345"
+		t.Claims.(jwt.MapClaims)["foo"] = "bar"
+		t.Claims.(jwt.MapClaims)["user_id"] = "user"
+		t.Claims.(jwt.MapClaims)["policy_id"] = p1ID
+		t.Claims.(jwt.MapClaims)["exp"] = time.Now().Add(time.Hour * 72).Unix()
+	})
+
+	authHeaders := map[string]string{"authorization": jwtToken}
+	t.Run("Initial request with 1st policy", func(t *testing.T) {
+		ts.Run(t, test.TestCase{
+			Headers: authHeaders, Code: 200,
+		})
+	})
+
+	// put in JWT another valid policy ID and do request again
+	jwtTokenAnotherPolicy := createJWKToken(func(t *jwt.Token) {
+		t.Header["kid"] = "12345"
+		t.Claims.(jwt.MapClaims)["foo"] = "bar"
+		t.Claims.(jwt.MapClaims)["user_id"] = "user"
+		t.Claims.(jwt.MapClaims)["policy_id"] = p2ID
+		t.Claims.(jwt.MapClaims)["exp"] = time.Now().Add(time.Hour * 72).Unix()
+	})
+
+	authHeaders = map[string]string{"authorization": jwtTokenAnotherPolicy}
+	t.Run("Request with new valid policy in JWT", func(t *testing.T) {
+		ts.Run(t, test.TestCase{
+			Headers: authHeaders, Code: 200,
+		})
+	})
+}
+
+// JWTSessionRSAWithJWK
+
+func prepareJWTSessionRSAWithJWK() string {
+	buildAndLoadAPI(func(spec *APISpec) {
+		spec.UseKeylessAccess = false
+		spec.EnableJWT = true
+		spec.JWTSigningMethod = "rsa"
+		spec.JWTSource = testHttpJWK
+		spec.JWTIdentityBaseField = "user_id"
+		spec.JWTPolicyFieldName = "policy_id"
+		spec.Proxy.ListenPath = "/"
+	})
+
+	pID := createPolicy()
+	jwtToken := createJWKToken(func(t *jwt.Token) {
+		t.Header["kid"] = "12345"
+		t.Claims.(jwt.MapClaims)["foo"] = "bar"
+		t.Claims.(jwt.MapClaims)["user_id"] = "user"
+		t.Claims.(jwt.MapClaims)["policy_id"] = pID
+		t.Claims.(jwt.MapClaims)["exp"] = time.Now().Add(time.Hour * 72).Unix()
+	})
+
+	return jwtToken
 }
 
 func TestJWTSessionRSAWithJWK(t *testing.T) {
-	spec := createSpecTest(t, jwtWithJWKDef)
-	spec.JWTSigningMethod = "rsa"
+	ts := newTykTestServer()
+	defer ts.Close()
 
-	policiesMu.Lock()
-	policiesByID["987654321"] = user.Policy{
-		ID:               "987654321",
-		OrgID:            "default",
-		Rate:             1000.0,
-		Per:              1.0,
-		QuotaMax:         -1,
-		QuotaRenewalRate: -1,
-		AccessRights:     map[string]user.AccessDefinition{},
-		Active:           true,
-		KeyExpiresIn:     60,
+	jwtToken := prepareJWTSessionRSAWithJWK()
+	authHeaders := map[string]string{"authorization": jwtToken}
+
+	t.Run("JWTSessionRSAWithJWK", func(t *testing.T) {
+		ts.Run(t, test.TestCase{
+			Headers: authHeaders, Code: 200,
+		})
+	})
+}
+
+func BenchmarkJWTSessionRSAWithJWK(b *testing.B) {
+	b.ReportAllocs()
+
+	ts := newTykTestServer()
+	defer ts.Close()
+
+	jwtToken := prepareJWTSessionRSAWithJWK()
+	authHeaders := map[string]string{"authorization": jwtToken}
+
+	for i := 0; i < b.N; i++ {
+		ts.Run(
+			b,
+			test.TestCase{
+				Headers: authHeaders,
+				Code:    200,
+			},
+		)
 	}
-	policiesMu.Unlock()
+}
 
-	// Create the token
-	token := jwt.New(jwt.GetSigningMethod("RS512"))
-	// Set the token ID
-	token.Header["kid"] = "12345"
-	// Set some claims
-	token.Claims.(jwt.MapClaims)["foo"] = "bar"
-	token.Claims.(jwt.MapClaims)["user_id"] = testKey(t, "token")
-	token.Claims.(jwt.MapClaims)["policy_id"] = "987654321"
-	token.Claims.(jwt.MapClaims)["exp"] = time.Now().Add(time.Hour * 72).Unix()
-	// Sign and get the complete encoded token as a string
-	signKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(jwtRSAPrivKey))
-	if err != nil {
-		t.Fatal("Couldn't extract private key: ", err)
-	}
-	tokenString, err := token.SignedString(signKey)
-	if err != nil {
-		t.Fatal("Couldn't create JWT token: ", err)
-	}
+// JWTSessionRSAWithEncodedJWK
 
-	recorder := httptest.NewRecorder()
-	req := testReq(t, "GET", "/jwt_test/", nil)
-	// add a colon here
-	req.Header.Set("authorization", "Bearer "+tokenString)
+func prepareJWTSessionRSAWithEncodedJWK() (*APISpec, string) {
+	spec := buildAPI(func(spec *APISpec) {
+		spec.UseKeylessAccess = false
+		spec.EnableJWT = true
+		spec.JWTSigningMethod = "rsa"
+		spec.JWTIdentityBaseField = "user_id"
+		spec.JWTPolicyFieldName = "policy_id"
+		spec.Proxy.ListenPath = "/"
+	})[0]
 
-	chain := getJWTChain(spec)
-	chain.ServeHTTP(recorder, req)
+	pID := createPolicy()
+	jwtToken := createJWKToken(func(t *jwt.Token) {
+		t.Header["kid"] = "12345"
+		// Set some claims
+		t.Claims.(jwt.MapClaims)["foo"] = "bar"
+		t.Claims.(jwt.MapClaims)["user_id"] = "user"
+		t.Claims.(jwt.MapClaims)["policy_id"] = pID
+		t.Claims.(jwt.MapClaims)["exp"] = time.Now().Add(time.Hour * 72).Unix()
+	})
 
-	if recorder.Code != 200 {
-		t.Error("Initial request failed with non-200 code, should have passed!: ", recorder.Code)
+	return spec, jwtToken
+}
+
+func TestJWTSessionRSAWithEncodedJWK(t *testing.T) {
+	ts := newTykTestServer()
+	defer ts.Close()
+
+	spec, jwtToken := prepareJWTSessionRSAWithEncodedJWK()
+
+	authHeaders := map[string]string{"authorization": jwtToken}
+
+	t.Run("Direct JWK URL", func(t *testing.T) {
+		spec.JWTSource = testHttpJWK
+		loadAPI(spec)
+
+		ts.Run(t, test.TestCase{
+			Headers: authHeaders, Code: 200,
+		})
+	})
+
+	t.Run("Base64 JWK URL", func(t *testing.T) {
+		spec.JWTSource = base64.StdEncoding.EncodeToString([]byte(testHttpJWK))
+		loadAPI(spec)
+
+		ts.Run(t, test.TestCase{
+			Headers: authHeaders, Code: 200,
+		})
+	})
+}
+
+func BenchmarkJWTSessionRSAWithEncodedJWK(b *testing.B) {
+	b.ReportAllocs()
+
+	ts := newTykTestServer()
+	defer ts.Close()
+
+	spec, jwtToken := prepareJWTSessionRSAWithEncodedJWK()
+	spec.JWTSource = base64.StdEncoding.EncodeToString([]byte(testHttpJWK))
+
+	loadAPI(spec)
+
+	authHeaders := map[string]string{"authorization": jwtToken}
+
+	for i := 0; i < b.N; i++ {
+		ts.Run(
+			b,
+			test.TestCase{
+				Headers: authHeaders,
+				Code:    200,
+			},
+		)
 	}
 }

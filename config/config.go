@@ -66,6 +66,7 @@ type AnalyticsConfigConfig struct {
 	GeoIPDBLocation         string              `json:"geo_ip_db_path"`
 	NormaliseUrls           NormalisedURLConfig `json:"normalise_urls"`
 	PoolSize                int                 `json:"pool_size"`
+	StorageExpirationTime   int                 `json:"storage_expiration_time"`
 	ignoredIPsCompiled      map[string]bool
 }
 
@@ -103,6 +104,7 @@ type SlaveOptionsConfig struct {
 	GroupID                         string `json:"group_id"`
 	CallTimeout                     int    `json:"call_timeout"`
 	PingTimeout                     int    `json:"ping_timeout"`
+	RPCPoolSize                     int    `json:"rpc_pool_size"`
 }
 
 type LocalSessionCacheConf struct {
@@ -112,19 +114,21 @@ type LocalSessionCacheConf struct {
 }
 
 type HttpServerOptionsConfig struct {
-	OverrideDefaults      bool       `json:"override_defaults"`
-	ReadTimeout           int        `json:"read_timeout"`
-	WriteTimeout          int        `json:"write_timeout"`
-	UseSSL                bool       `json:"use_ssl"`
-	UseLE_SSL             bool       `json:"use_ssl_le"`
-	SSLInsecureSkipVerify bool       `json:"ssl_insecure_skip_verify"`
-	EnableWebSockets      bool       `json:"enable_websockets"`
-	Certificates          []CertData `json:"certificates"`
-	SSLCertificates       []string   `json:"ssl_certificates"`
-	ServerName            string     `json:"server_name"`
-	MinVersion            uint16     `json:"min_version"`
-	FlushInterval         int        `json:"flush_interval"`
-	SkipURLCleaning       bool       `json:"skip_url_cleaning"`
+	OverrideDefaults       bool       `json:"override_defaults"`
+	ReadTimeout            int        `json:"read_timeout"`
+	WriteTimeout           int        `json:"write_timeout"`
+	UseSSL                 bool       `json:"use_ssl"`
+	UseLE_SSL              bool       `json:"use_ssl_le"`
+	SSLInsecureSkipVerify  bool       `json:"ssl_insecure_skip_verify"`
+	EnableWebSockets       bool       `json:"enable_websockets"`
+	Certificates           []CertData `json:"certificates"`
+	SSLCertificates        []string   `json:"ssl_certificates"`
+	ServerName             string     `json:"server_name"`
+	MinVersion             uint16     `json:"min_version"`
+	FlushInterval          int        `json:"flush_interval"`
+	SkipURLCleaning        bool       `json:"skip_url_cleaning"`
+	SkipTargetPathEscaping bool       `json:"skip_target_path_escaping"`
+	Ciphers                []string   `json:"ssl_ciphers"`
 }
 
 type AuthOverrideConf struct {
@@ -168,6 +172,11 @@ type SecurityConfig struct {
 	PrivateCertificateEncodingSecret string             `json:"private_certificate_encoding_secret"`
 	ControlAPIUseMutualTLS           bool               `json:"control_api_use_mutual_tls"`
 	Certificates                     CertificatesConfig `json:"certificates"`
+}
+
+type NewRelicConfig struct {
+	AppName    string `json:"app_name"`
+	LicenseKey string `json:"license_key"`
 }
 
 // Config is the configuration object used by tyk to set up various parameters.
@@ -214,7 +223,7 @@ type Config struct {
 	StatsdConnectionString            string                                `json:"statsd_connection_string"`
 	StatsdPrefix                      string                                `json:"statsd_prefix"`
 	EnforceOrgDataAge                 bool                                  `json:"enforce_org_data_age"`
-	EnforceOrgDataDeailLogging        bool                                  `json:"enforce_org_data_detail_logging"`
+	EnforceOrgDataDetailLogging       bool                                  `json:"enforce_org_data_detail_logging"`
 	EnforceOrgQuotas                  bool                                  `json:"enforce_org_quotas"`
 	ExperimentalProcessOrgOffThread   bool                                  `json:"experimental_process_org_off_thread"`
 	EnableNonTransactionalRateLimiter bool                                  `json:"enable_non_transactional_rate_limiter"`
@@ -224,6 +233,7 @@ type Config struct {
 	Monitor                           MonitorConfig                         `json:"monitor"`
 	OauthRefreshExpire                int64                                 `json:"oauth_refresh_token_expire"`
 	OauthTokenExpire                  int32                                 `json:"oauth_token_expire"`
+	OauthTokenExpiredRetainPeriod     int32                                 `json:"oauth_token_expired_retain_period"`
 	OauthRedirectUriSeparator         string                                `json:"oauth_redirect_uri_separator"`
 	SlaveOptions                      SlaveOptionsConfig                    `json:"slave_options"`
 	DisableVirtualPathBlobs           bool                                  `json:"disable_virtual_path_blobs"`
@@ -239,6 +249,7 @@ type Config struct {
 	ControlAPIPort                    int                                   `json:"control_api_port"`
 	EnableCustomDomains               bool                                  `json:"enable_custom_domains"`
 	EnableJSVM                        bool                                  `json:"enable_jsvm"`
+	JSVMTimeout                       int                                   `json:"jsvm_timeout"`
 	CoProcessOptions                  CoProcessConfig                       `json:"coprocess_options"`
 	HideGeneratorHeader               bool                                  `json:"hide_generator_header"`
 	EventHandlers                     apidef.EventHandlerMetaConfig         `json:"event_handlers"`
@@ -255,11 +266,16 @@ type Config struct {
 	AllowRemoteConfig                 bool                                  `bson:"allow_remote_config" json:"allow_remote_config"`
 	LegacyEnableAllowanceCountdown    bool                                  `bson:"legacy_enable_allowance_countdown" json:"legacy_enable_allowance_countdown"`
 	MaxIdleConnsPerHost               int                                   `bson:"max_idle_connections_per_host" json:"max_idle_connections_per_host"`
+	MaxConnTime                       int64                                 `json:"max_conn_time"`
 	ReloadWaitTime                    int                                   `bson:"reload_wait_time" json:"reload_wait_time"`
 	ProxySSLInsecureSkipVerify        bool                                  `json:"proxy_ssl_insecure_skip_verify"`
 	ProxyDefaultTimeout               int                                   `json:"proxy_default_timeout"`
 	LogLevel                          string                                `json:"log_level"`
 	Security                          SecurityConfig                        `json:"security"`
+	EnableKeyLogging                  bool                                  `json:"enable_key_logging"`
+	NewRelic                          NewRelicConfig                        `json:"newrelic"`
+	VersionHeader                     string                                `json:"version_header"`
+	EnableHashedKeysListing           bool                                  `json:"enable_hashed_keys_listing"`
 }
 
 type CertData struct {

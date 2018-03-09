@@ -6,21 +6,16 @@ import (
 
 	"errors"
 
-	"github.com/Sirupsen/logrus"
-
 	"github.com/TykTechnologies/tyk/config"
 )
 
-var orgChanMap = make(map[string]chan bool)
-
-type orgActiveMapMu struct {
-	sync.RWMutex
-	OrgMap map[string]bool
+type orgChanMapMu struct {
+	sync.Mutex
+	channels map[string](chan bool)
 }
 
-var orgActiveMap = orgActiveMapMu{
-	OrgMap: map[string]bool{},
-}
+var orgChanMap = orgChanMapMu{channels: map[string](chan bool){}}
+var orgActiveMap sync.Map
 
 // RateLimitAndQuotaCheck will check the incomming request and key whether it is within it's quota and
 // within it's rate limit, it makes use of the SessionLimiter object to do this
@@ -57,12 +52,9 @@ func (k *OrganizationMonitor) ProcessRequestLive(r *http.Request) (error, int) {
 	}
 
 	// Is it active?
+	logEntry := getLogEntryForRequest(r, k.Spec.OrgID, nil)
 	if session.IsInactive {
-		log.WithFields(logrus.Fields{
-			"path":   r.URL.Path,
-			"origin": requestIP(r),
-			"key":    k.Spec.OrgID,
-		}).Warning("Organisation access is disabled.")
+		logEntry.Warning("Organisation access is disabled.")
 
 		return errors.New("this organisation access has been disabled, please contact your API administrator"), 403
 	}
@@ -72,18 +64,14 @@ func (k *OrganizationMonitor) ProcessRequestLive(r *http.Request) (error, int) {
 		k.Spec.OrgID,
 		k.Spec.OrgSessionManager.Store(), false, false)
 
-	k.Spec.OrgSessionManager.UpdateSession(k.Spec.OrgID, &session, session.Lifetime(k.Spec.SessionLifetime))
+	k.Spec.OrgSessionManager.UpdateSession(k.Spec.OrgID, &session, session.Lifetime(k.Spec.SessionLifetime), false)
 
 	// org limits apply only to quotas, so we don't care about
 	// sessionFailRateLimit.
 	switch reason {
 	case sessionFailNone:
 	case sessionFailQuota:
-		log.WithFields(logrus.Fields{
-			"path":   r.URL.Path,
-			"origin": requestIP(r),
-			"key":    k.Spec.OrgID,
-		}).Warning("Organisation quota has been exceeded.")
+		logEntry.Warning("Organisation quota has been exceeded.")
 
 		// Fire a quota exceeded event
 		k.FireEvent(EventOrgQuotaExceeded, EventKeyFailureMeta{
@@ -111,27 +99,28 @@ func (k *OrganizationMonitor) ProcessRequestLive(r *http.Request) (error, int) {
 func (k *OrganizationMonitor) SetOrgSentinel(orgChan chan bool, orgId string) {
 	for isActive := range orgChan {
 		log.Debug("Chan got:", isActive)
-		orgActiveMap.Lock()
-		orgActiveMap.OrgMap[orgId] = isActive
-		orgActiveMap.Unlock()
+		o, ok := orgActiveMap.Load(orgId)
+		if ok {
+			o = isActive
+			orgActiveMap.Store(orgId, o)
+		}
 	}
 }
 
 func (k *OrganizationMonitor) ProcessRequestOffThread(r *http.Request) (error, int) {
-
-	orgChan, ok := orgChanMap[k.Spec.OrgID]
+	orgChanMap.Lock()
+	orgChan, ok := orgChanMap.channels[k.Spec.OrgID]
 	if !ok {
-		orgChanMap[k.Spec.OrgID] = make(chan bool)
-		orgChan = orgChanMap[k.Spec.OrgID]
+		orgChan = make(chan bool)
+		orgChanMap.channels[k.Spec.OrgID] = orgChan
 		go k.SetOrgSentinel(orgChan, k.Spec.OrgID)
 	}
+	orgChanMap.Unlock()
+	active, found := orgActiveMap.Load(k.Spec.OrgID)
 
-	go k.AllowAccessNext(orgChan, r)
+	go k.AllowAccessNext(orgChan, r.URL.Path, requestIP(r), r)
 
-	orgActiveMap.RLock()
-	active, found := orgActiveMap.OrgMap[k.Spec.OrgID]
-	orgActiveMap.RUnlock()
-	if found && !active {
+	if found && !active.(bool) {
 		log.Debug("Is not active")
 		return errors.New("This organisation access has been disabled or quota is exceeded, please contact your API administrator"), 403
 	}
@@ -142,7 +131,7 @@ func (k *OrganizationMonitor) ProcessRequestOffThread(r *http.Request) (error, i
 	return nil, 200
 }
 
-func (k *OrganizationMonitor) AllowAccessNext(orgChan chan bool, r *http.Request) {
+func (k *OrganizationMonitor) AllowAccessNext(orgChan chan bool, path string, IP string, r *http.Request) {
 
 	session, found := k.OrgSession(k.Spec.OrgID)
 
@@ -153,12 +142,9 @@ func (k *OrganizationMonitor) AllowAccessNext(orgChan chan bool, r *http.Request
 	}
 
 	// Is it active?
+	logEntry := getExplicitLogEntryForRequest(path, IP, k.Spec.OrgID, nil)
 	if session.IsInactive {
-		log.WithFields(logrus.Fields{
-			"path":   r.URL.Path,
-			"origin": requestIP(r),
-			"key":    k.Spec.OrgID,
-		}).Warning("Organisation access is disabled.")
+		logEntry.Warning("Organisation access is disabled.")
 
 		//return errors.New("This organisation access has been disabled, please contact your API administrator."), 403
 		orgChan <- false
@@ -168,21 +154,18 @@ func (k *OrganizationMonitor) AllowAccessNext(orgChan chan bool, r *http.Request
 	// We found a session, apply the quota limiter
 	isQuotaExceeded := k.sessionlimiter.RedisQuotaExceeded(&session, k.Spec.OrgID, k.Spec.OrgSessionManager.Store())
 
-	k.Spec.OrgSessionManager.UpdateSession(k.Spec.OrgID, &session, session.Lifetime(k.Spec.SessionLifetime))
+	k.Spec.OrgSessionManager.UpdateSession(k.Spec.OrgID, &session, session.Lifetime(k.Spec.SessionLifetime), false)
 
 	if isQuotaExceeded {
-		log.WithFields(logrus.Fields{
-			"path":   r.URL.Path,
-			"origin": requestIP(r),
-			"key":    k.Spec.OrgID,
-		}).Warning("Organisation quota has been exceeded.")
+		logEntry.Warning("Organisation quota has been exceeded.")
 
 		// Fire a quota exceeded event
 		k.FireEvent(EventOrgQuotaExceeded, EventKeyFailureMeta{
-			EventMetaDefault: EventMetaDefault{Message: "Organisation quota has been exceeded", OriginatingRequest: EncodeRequestToEvent(r)},
-			Path:             r.URL.Path,
-			Origin:           requestIP(r),
-			Key:              k.Spec.OrgID,
+			EventMetaDefault: EventMetaDefault{
+				Message: "Organisation quota has been exceeded"},
+			Path:   path,
+			Origin: IP,
+			Key:    k.Spec.OrgID,
 		})
 
 		//return errors.New("This organisation quota has been exceeded, please contact your API administrator"), 403

@@ -12,12 +12,14 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"text/template"
 	"time"
 
 	"github.com/rubyist/circuitbreaker"
 
+	"github.com/TykTechnologies/gojsonschema"
 	"github.com/TykTechnologies/tyk/apidef"
 	"github.com/TykTechnologies/tyk/config"
 	"github.com/TykTechnologies/tyk/storage"
@@ -51,6 +53,7 @@ const (
 	MethodTransformed
 	RequestTracked
 	RequestNotTracked
+	ValidateJSONRequest
 )
 
 // RequestStatus is a custom type to avoid collisions
@@ -79,6 +82,7 @@ const (
 	StatusRequestSizeControlled    RequestStatus = "Request Size Limited"
 	StatusRequesTracked            RequestStatus = "Request Tracked"
 	StatusRequestNotTracked        RequestStatus = "Request Not Tracked"
+	StatusValidateJSON             RequestStatus = "Validate JSON"
 )
 
 // URLSpec represents a flattened specification for URLs, used to check if a proxy URL
@@ -100,6 +104,7 @@ type URLSpec struct {
 	MethodTransform         apidef.MethodTransformMeta
 	TrackEndpoint           apidef.TrackEndpointMeta
 	DoNotTrackEndpoint      apidef.TrackEndpointMeta
+	ValidatePathMeta        apidef.ValidatePathMeta
 }
 
 type TransformSpec struct {
@@ -116,6 +121,7 @@ type ExtendedCircuitBreakerMeta struct {
 // flattened URL list is checked for matching paths and then it's status evaluated if found.
 type APISpec struct {
 	*apidef.APIDefinition
+	sync.Mutex
 
 	RxPaths                  map[string][]URLSpec
 	WhiteListEnabled         map[string]bool
@@ -136,6 +142,7 @@ type APISpec struct {
 	HasRun                   bool
 	ServiceRefreshInProgress bool
 	HTTPTransport            http.RoundTripper
+	HTTPTransportCreated     time.Time
 }
 
 // APIDefinitionLoader will load an Api definition from a storage
@@ -281,23 +288,29 @@ func (a APIDefinitionLoader) FromDashboardService(endpoint, secret string) []*AP
 	}
 
 	// Process
-	var apiSpecs []*APISpec
+	var specs []*APISpec
 	for _, def := range apiDefs {
 		spec := a.MakeSpec(def)
-		apiSpecs = append(apiSpecs, spec)
+		specs = append(specs, spec)
 	}
 
 	// Set the nonce
 	ServiceNonce = list.Nonce
 	log.Debug("Loading APIS Finished: Nonce Set: ", ServiceNonce)
 
-	return apiSpecs
+	return specs
 }
 
 // FromCloud will connect and download ApiDefintions from a Mongo DB instance.
 func (a APIDefinitionLoader) FromRPC(orgId string) []*APISpec {
+	if rpcEmergencyMode {
+		return LoadDefinitionsFromRPCBackup()
+	}
+
 	store := RPCStorageHandler{UserKey: config.Global.SlaveOptions.APIKey, Address: config.Global.SlaveOptions.ConnectionString}
-	store.Connect()
+	if !store.Connect() {
+		return nil
+	}
 
 	// enable segments
 	var tags []string
@@ -325,7 +338,7 @@ func (a APIDefinitionLoader) processRPCDefinitions(apiCollection string) []*APIS
 		return nil
 	}
 
-	var apiSpecs []*APISpec
+	var specs []*APISpec
 	for _, def := range apiDefs {
 		def.DecodeFromDB()
 
@@ -340,10 +353,10 @@ func (a APIDefinitionLoader) processRPCDefinitions(apiCollection string) []*APIS
 		}
 
 		spec := a.MakeSpec(def)
-		apiSpecs = append(apiSpecs, spec)
+		specs = append(specs, spec)
 	}
 
-	return apiSpecs
+	return specs
 }
 
 func (a APIDefinitionLoader) ParseDefinition(r io.Reader) *apidef.APIDefinition {
@@ -357,7 +370,7 @@ func (a APIDefinitionLoader) ParseDefinition(r io.Reader) *apidef.APIDefinition 
 // FromDir will load APIDefinitions from a directory on the filesystem. Definitions need
 // to be the JSON representation of APIDefinition object
 func (a APIDefinitionLoader) FromDir(dir string) []*APISpec {
-	var apiSpecs []*APISpec
+	var specs []*APISpec
 	// Grab json files from directory
 	paths, _ := filepath.Glob(filepath.Join(dir, "*.json"))
 	for _, path := range paths {
@@ -370,9 +383,9 @@ func (a APIDefinitionLoader) FromDir(dir string) []*APISpec {
 		def := a.ParseDefinition(f)
 		f.Close()
 		spec := a.MakeSpec(def)
-		apiSpecs = append(apiSpecs, spec)
+		specs = append(specs, spec)
 	}
-	return apiSpecs
+	return specs
 }
 
 func (a APIDefinitionLoader) getPathSpecs(apiVersionDef apidef.VersionInfo) ([]URLSpec, bool) {
@@ -691,9 +704,32 @@ func (a APIDefinitionLoader) compileTrackedEndpointPathspathSpec(paths []apidef.
 	for _, stringSpec := range paths {
 		newSpec := URLSpec{}
 		a.generateRegex(stringSpec.Path, &newSpec, stat)
+
+		// set Path if it wasn't set
+		if stringSpec.Path == "" {
+			// even if it is empty (and regex matches everything) some middlewares expect to be value here
+			stringSpec.Path = "/"
+		}
+
 		// Extend with method actions
 		newSpec.TrackEndpoint = stringSpec
 		urlSpec = append(urlSpec, newSpec)
+	}
+
+	return urlSpec
+}
+
+func (a APIDefinitionLoader) compileValidateJSONPathspathSpec(paths []apidef.ValidatePathMeta, stat URLStatus) []URLSpec {
+	urlSpec := make([]URLSpec, len(paths))
+
+	for i, stringSpec := range paths {
+		newSpec := URLSpec{}
+		a.generateRegex(stringSpec.Path, &newSpec, stat)
+		// Extend with method actions
+
+		stringSpec.SchemaCache = gojsonschema.NewGoLoader(stringSpec.Schema)
+		newSpec.ValidatePathMeta = stringSpec
+		urlSpec[i] = newSpec
 	}
 
 	return urlSpec
@@ -732,6 +768,7 @@ func (a APIDefinitionLoader) getExtendedPathSpecs(apiVersionDef apidef.VersionIn
 	methodTransforms := a.compileMethodTransformSpec(apiVersionDef.ExtendedPaths.MethodTransforms, MethodTransformed)
 	trackedPaths := a.compileTrackedEndpointPathspathSpec(apiVersionDef.ExtendedPaths.TrackEndpoints, RequestTracked)
 	unTrackedPaths := a.compileUnTrackedEndpointPathspathSpec(apiVersionDef.ExtendedPaths.DoNotTrackEndpoints, RequestNotTracked)
+	validateJSON := a.compileValidateJSONPathspathSpec(apiVersionDef.ExtendedPaths.ValidateJSON, ValidateJSONRequest)
 
 	combinedPath := []URLSpec{}
 	combinedPath = append(combinedPath, ignoredPaths...)
@@ -750,6 +787,7 @@ func (a APIDefinitionLoader) getExtendedPathSpecs(apiVersionDef apidef.VersionIn
 	combinedPath = append(combinedPath, methodTransforms...)
 	combinedPath = append(combinedPath, trackedPaths...)
 	combinedPath = append(combinedPath, unTrackedPaths...)
+	combinedPath = append(combinedPath, validateJSON...)
 
 	return combinedPath, len(whiteListPaths) > 0
 }
@@ -795,6 +833,9 @@ func (a *APISpec) getURLStatus(stat URLStatus) RequestStatus {
 		return StatusRequesTracked
 	case RequestNotTracked:
 		return StatusRequestNotTracked
+	case ValidateJSONRequest:
+		return StatusValidateJSON
+
 	default:
 		log.Error("URL Status was not one of Ignored, Blacklist or WhiteList! Blocking.")
 		return EndPointNotAllowed
@@ -811,29 +852,24 @@ func (a *APISpec) URLAllowedAndIgnored(r *http.Request, rxPaths []URLSpec, white
 		if v.MethodActions != nil {
 			// We are using an extended path set, check for the method
 			methodMeta, matchMethodOk := v.MethodActions[r.Method]
-			if matchMethodOk {
-				// Matched the method, check what status it is:
-				if methodMeta.Action == apidef.NoAction {
-					// NoAction status means we're not treating this request in any special or exceptional way
-					return a.getURLStatus(v.Status), nil
-				}
-				// TODO: Extend here for additional reply options
-				switch methodMeta.Action {
-				case apidef.Reply:
-					return StatusRedirectFlowByReply, &methodMeta
-				default:
-					log.Error("URL Method Action was not set to NoAction, blocking.")
-					return EndPointNotAllowed, nil
-				}
+
+			if !matchMethodOk {
+				continue
 			}
 
-			if whiteListStatus {
-				// We have a whitelist, nothing gets through unless specifically defined
+			// Matched the method, check what status it is:
+			if methodMeta.Action == apidef.NoAction {
+				// NoAction status means we're not treating this request in any special or exceptional way
+				return a.getURLStatus(v.Status), nil
+			}
+			// TODO: Extend here for additional reply options
+			switch methodMeta.Action {
+			case apidef.Reply:
+				return StatusRedirectFlowByReply, &methodMeta
+			default:
+				log.Error("URL Method Action was not set to NoAction, blocking.")
 				return EndPointNotAllowed, nil
 			}
-
-			// Method not matched in an extended set, means it can be passed through
-			return StatusOk, nil
 		}
 
 		if v.TransformAction.Template != nil {
@@ -863,10 +899,19 @@ func (a *APISpec) URLAllowedAndIgnored(r *http.Request, rxPaths []URLSpec, white
 func (a *APISpec) CheckSpecMatchesStatus(r *http.Request, rxPaths []URLSpec, mode URLStatus) (bool, interface{}) {
 	// Check if ignored
 	for _, v := range rxPaths {
+		if mode != v.Status {
+			continue
+		}
 		match := v.Spec.MatchString(r.URL.Path)
 		// only return it it's what we are looking for
-		if !match || mode != v.Status {
-			continue
+		if !match {
+			// check for special case when using url_rewrites with transform_response
+			// and specifying the same "path" expression
+			if mode != TransformedResponse {
+				continue
+			} else if v.TransformResponseAction.Path != ctxGetUrlRewritePath(r) {
+				continue
+			}
 		}
 		switch v.Status {
 		case Ignored, BlackList, WhiteList, Cached:
@@ -919,6 +964,10 @@ func (a *APISpec) CheckSpecMatchesStatus(r *http.Request, rxPaths []URLSpec, mod
 			if r.Method == v.DoNotTrackEndpoint.Method {
 				return true, &v.DoNotTrackEndpoint
 			}
+		case ValidateJSONRequest:
+			if r.Method == v.ValidatePathMeta.Method {
+				return true, &v.ValidatePathMeta
+			}
 		}
 	}
 	return false, nil
@@ -948,6 +997,10 @@ func (a *APISpec) getVersionFromRequest(r *http.Request) string {
 // request) is expired. If it isn't and the configured time was valid,
 // it also returns the expiration time.
 func (a *APISpec) VersionExpired(versionDef *apidef.VersionInfo) (bool, *time.Time) {
+	if a.VersionData.NotVersioned {
+		return false, nil
+	}
+
 	// Never expires
 	if versionDef.Expires == "" || versionDef.Expires == "-1" {
 		return false, nil
@@ -1019,8 +1072,13 @@ func (a *APISpec) Version(r *http.Request) (*apidef.VersionInfo, []URLSpec, bool
 			}
 		} else {
 			// Extract Version Info
+			// First checking for if default version is set
 			vname := a.getVersionFromRequest(r)
-			if vname == "" {
+			if vname == "" && a.VersionData.DefaultVersion != "" {
+				vname = a.VersionData.DefaultVersion
+				ctxSetDefaultVersion(r)
+			}
+			if vname == "" && a.VersionData.DefaultVersion == "" {
 				return &version, nil, false, VersionNotFound
 			}
 			// Load Version Data - General

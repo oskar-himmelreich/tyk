@@ -24,11 +24,13 @@ const (
 	SessionData = iota
 	AuthHeaderValue
 	VersionData
+	VersionDefault
 	OrgSessionContext
 	ContextData
 	RetainHost
 	TrackThisEndpoint
 	DoNotTrackThisEndpoint
+	UrlRewritePath
 )
 
 var SessionCache = cache.New(10*time.Second, 5*time.Second)
@@ -65,6 +67,16 @@ func tagHeaders(r *http.Request, th []string, tags []string) []string {
 	}
 
 	return tags
+}
+
+func addVersionHeader(w http.ResponseWriter, r *http.Request) {
+	if ctxGetDefaultVersion(r) {
+		if vinfo := ctxGetVersionInfo(r); vinfo != nil {
+			if config.Global.VersionHeader != "" {
+				w.Header().Set(config.Global.VersionHeader, vinfo.Name)
+			}
+		}
+	}
 }
 
 func (s *SuccessHandler) RecordHit(r *http.Request, timing int64, code int, requestCopy *http.Request, responseCopy *http.Response) {
@@ -105,15 +117,25 @@ func (s *SuccessHandler) RecordHit(r *http.Request, timing int64, code int, requ
 
 		rawRequest := ""
 		rawResponse := ""
+
 		if recordDetail(r) {
 			// Get the wire format representation
 			var wireFormatReq bytes.Buffer
 			requestCopy.Write(&wireFormatReq)
 			rawRequest = base64.StdEncoding.EncodeToString(wireFormatReq.Bytes())
-			// Get the wire format representation
-			var wireFormatRes bytes.Buffer
-			responseCopy.Write(&wireFormatRes)
-			rawResponse = base64.StdEncoding.EncodeToString(wireFormatRes.Bytes())
+			// responseCopy, unlike requestCopy, can be nil
+			// here - if the response was cached in
+			// mw_redis_cache, RecordHit gets passed a nil
+			// response copy.
+			// TODO: pass a copy of the cached response in
+			// mw_redis_cache instead? is there a reason not
+			// to include that in the analytics?
+			if responseCopy != nil {
+				// Get the wire format representation
+				var wireFormatRes bytes.Buffer
+				responseCopy.Write(&wireFormatRes)
+				rawResponse = base64.StdEncoding.EncodeToString(wireFormatRes.Bytes())
+			}
 		}
 
 		trackEP := false
@@ -182,7 +204,7 @@ func (s *SuccessHandler) RecordHit(r *http.Request, timing int64, code int, requ
 
 func recordDetail(r *http.Request) bool {
 	// Are we even checking?
-	if !config.Global.EnforceOrgDataDeailLogging {
+	if !config.Global.EnforceOrgDataDetailLogging {
 		return config.Global.AnalyticsConfig.EnableDetailedRecording
 	}
 
@@ -206,8 +228,11 @@ func (s *SuccessHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) *http
 	if s.Spec.Proxy.StripListenPath {
 		log.Debug("Stripping: ", s.Spec.Proxy.ListenPath)
 		r.URL.Path = strings.Replace(r.URL.Path, s.Spec.Proxy.ListenPath, "", 1)
+		r.URL.RawPath = strings.Replace(r.URL.RawPath, s.Spec.Proxy.ListenPath, "", 1)
 		log.Debug("Upstream Path is: ", r.URL.Path)
 	}
+
+	addVersionHeader(w, r)
 
 	var copiedRequest *http.Request
 	if recordDetail(r) {
@@ -226,6 +251,7 @@ func (s *SuccessHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) *http
 		if recordDetail(r) {
 			copiedResponse = copyResponse(resp)
 		}
+
 		s.RecordHit(r, int64(millisec), resp.StatusCode, copiedRequest, copiedResponse)
 	}
 	log.Debug("Done proxy")
@@ -239,6 +265,7 @@ func (s *SuccessHandler) ServeHTTPWithCache(w http.ResponseWriter, r *http.Reque
 	// Make sure we get the correct target URL
 	if s.Spec.Proxy.StripListenPath {
 		r.URL.Path = strings.Replace(r.URL.Path, s.Spec.Proxy.ListenPath, "", 1)
+		r.URL.RawPath = strings.Replace(r.URL.RawPath, s.Spec.Proxy.ListenPath, "", 1)
 	}
 
 	var copiedRequest *http.Request
@@ -249,6 +276,8 @@ func (s *SuccessHandler) ServeHTTPWithCache(w http.ResponseWriter, r *http.Reque
 	t1 := time.Now()
 	inRes := s.Proxy.ServeHTTPForCache(w, r)
 	t2 := time.Now()
+
+	addVersionHeader(w, r)
 
 	var copiedResponse *http.Response
 	if recordDetail(r) {

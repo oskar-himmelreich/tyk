@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 
 	"github.com/Sirupsen/logrus"
@@ -75,8 +76,18 @@ func (c *CoProcessor) ObjectFromRequest(r *http.Request) *coprocess.Object {
 		body = string(originalBody)
 	}
 
+	headers := ProtoMap(r.Header)
+
+	host := r.Host
+	if host == "" && r.URL != nil {
+		host = r.URL.Host
+	}
+	if host != "" {
+		headers["Host"] = host
+	}
+
 	miniRequestObject := &coprocess.MiniRequestObject{
-		Headers:        ProtoMap(r.Header),
+		Headers:        headers,
 		SetHeaders:     map[string]string{},
 		DeleteHeaders:  []string{},
 		Body:           body,
@@ -88,6 +99,8 @@ func (c *CoProcessor) ObjectFromRequest(r *http.Request) *coprocess.Object {
 		ReturnOverrides: &coprocess.ReturnOverrides{
 			ResponseCode: -1,
 		},
+		Method:     r.Method,
+		RequestUri: r.RequestURI,
 	}
 
 	object := &coprocess.Object{
@@ -102,14 +115,19 @@ func (c *CoProcessor) ObjectFromRequest(r *http.Request) *coprocess.Object {
 
 	object.HookType = c.HookType
 
-	object.Metadata = make(map[string]string)
 	object.Spec = make(map[string]string)
 
 	// Append spec data:
 	if c.Middleware != nil {
+		configDataAsJson := []byte("{}")
+		if len(c.Middleware.Spec.ConfigData) > 0 {
+			configDataAsJson, _ = json.Marshal(c.Middleware.Spec.ConfigData)
+		}
+
 		object.Spec = map[string]string{
-			"OrgID": c.Middleware.Spec.OrgID,
-			"APIID": c.Middleware.Spec.APIID,
+			"OrgID":       c.Middleware.Spec.OrgID,
+			"APIID":       c.Middleware.Spec.APIID,
+			"config_data": string(configDataAsJson),
 		}
 	}
 
@@ -252,11 +270,8 @@ func (m *CoProcessMiddleware) ProcessRequest(w http.ResponseWriter, r *http.Requ
 	// The CP middleware indicates this is a bad auth:
 	if returnObject.Request.ReturnOverrides.ResponseCode > 400 {
 
-		log.WithFields(logrus.Fields{
-			"path":   r.URL.Path,
-			"origin": requestIP(r),
-			"key":    token,
-		}).Info("Attempted access with invalid key.")
+		logEntry := getLogEntryForRequest(r, token, nil)
+		logEntry.Info("Attempted access with invalid key.")
 
 		// Fire Authfailed Event
 		AuthFailed(m, r, token)
@@ -285,6 +300,8 @@ func (m *CoProcessMiddleware) ProcessRequest(w http.ResponseWriter, r *http.Requ
 	if m.Spec.EnableCoProcessAuth && m.HookType == coprocess.HookType_CustomKeyCheck {
 		// The CP middleware didn't setup a session:
 		if returnObject.Session == nil {
+			authHeaderValue := r.Header.Get(m.Spec.Auth.AuthHeaderName)
+			AuthFailed(m, r, authHeaderValue)
 			return errors.New("Key not authorised"), 403
 		}
 
@@ -293,7 +310,7 @@ func (m *CoProcessMiddleware) ProcessRequest(w http.ResponseWriter, r *http.Requ
 		if extractor == nil {
 			sessionLifetime := returnedSession.Lifetime(m.Spec.SessionLifetime)
 			// This API is not using the ID extractor, but we've got a session:
-			m.Spec.SessionManager.UpdateSession(token, returnedSession, sessionLifetime)
+			m.Spec.SessionManager.UpdateSession(token, returnedSession, sessionLifetime, false)
 			ctxSetSession(r, returnedSession)
 			ctxSetAuthToken(r, token)
 		} else {

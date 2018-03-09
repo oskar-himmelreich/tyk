@@ -5,8 +5,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/Sirupsen/logrus"
-
 	"github.com/TykTechnologies/tyk/apidef"
 	"github.com/TykTechnologies/tyk/certs"
 )
@@ -76,12 +74,10 @@ func (k *AuthKey) ProcessRequest(w http.ResponseWriter, r *http.Request, _ inter
 
 	if key == "" {
 		// No header value, fail
-		log.WithFields(logrus.Fields{
-			"path":   r.URL.Path,
-			"origin": requestIP(r),
-		}).Info("Attempted access with malformed header, no auth header found.")
+		logEntry := getLogEntryForRequest(r, "", nil)
+		logEntry.Info("Attempted access with malformed header, no auth header found.")
 
-		return errors.New("Authorization field missing"), 401
+		return errors.New("Authorization field missing"), http.StatusUnauthorized
 	}
 
 	// Ignore Bearer prefix on token if it exists
@@ -90,11 +86,8 @@ func (k *AuthKey) ProcessRequest(w http.ResponseWriter, r *http.Request, _ inter
 	// Check if API key valid
 	session, keyExists := k.CheckSessionAndIdentityForValidKey(key)
 	if !keyExists {
-		log.WithFields(logrus.Fields{
-			"path":   r.URL.Path,
-			"origin": requestIP(r),
-			"key":    key,
-		}).Info("Attempted access with non-existent key.")
+		logEntry := getLogEntryForRequest(r, key, nil)
+		logEntry.Info("Attempted access with non-existent key.")
 
 		// Fire Authfailed Event
 		AuthFailed(k, r, key)
@@ -102,7 +95,7 @@ func (k *AuthKey) ProcessRequest(w http.ResponseWriter, r *http.Request, _ inter
 		// Report in health check
 		reportHealthValue(k.Spec, KeyFailure, "1")
 
-		return errors.New("Key not authorised"), 403
+		return errors.New("Key not authorised"), http.StatusForbidden
 	}
 
 	// Set session state on context, we will need it later
@@ -113,7 +106,7 @@ func (k *AuthKey) ProcessRequest(w http.ResponseWriter, r *http.Request, _ inter
 		k.setContextVars(r, key)
 	}
 
-	return nil, 200
+	return nil, http.StatusOK
 }
 
 func stripBearer(token string) string {

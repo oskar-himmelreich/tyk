@@ -4,8 +4,6 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/Sirupsen/logrus"
-
 	"github.com/TykTechnologies/tyk/config"
 )
 
@@ -27,11 +25,8 @@ func (k *RateLimitAndQuotaCheck) EnabledForSpec() bool {
 }
 
 func (k *RateLimitAndQuotaCheck) handleRateLimitFailure(r *http.Request, token string) (error, int) {
-	log.WithFields(logrus.Fields{
-		"path":   r.URL.Path,
-		"origin": requestIP(r),
-		"key":    token,
-	}).Info("Key rate limit exceeded.")
+	logEntry := getLogEntryForRequest(r, token, nil)
+	logEntry.Info("Key rate limit exceeded.")
 
 	// Fire a rate limit exceeded event
 	k.FireEvent(EventRateLimitExceeded, EventKeyFailureMeta{
@@ -48,11 +43,8 @@ func (k *RateLimitAndQuotaCheck) handleRateLimitFailure(r *http.Request, token s
 }
 
 func (k *RateLimitAndQuotaCheck) handleQuotaFailure(r *http.Request, token string) (error, int) {
-	log.WithFields(logrus.Fields{
-		"path":   r.URL.Path,
-		"origin": requestIP(r),
-		"key":    token,
-	}).Info("Key quota limit exceeded.")
+	logEntry := getLogEntryForRequest(r, token, nil)
+	logEntry.Info("Key quota limit exceeded.")
 
 	// Fire a quota exceeded event
 	k.FireEvent(EventQuotaExceeded, EventKeyFailureMeta{
@@ -83,7 +75,7 @@ func (k *RateLimitAndQuotaCheck) ProcessRequest(w http.ResponseWriter, r *http.R
 	// If either are disabled, save the write roundtrip
 	if !k.Spec.DisableRateLimit || !k.Spec.DisableQuota {
 		// Ensure quota and rate data for this session are recorded
-		k.Spec.SessionManager.UpdateSession(token, session, session.Lifetime(k.Spec.SessionLifetime))
+		k.Spec.SessionManager.UpdateSession(token, session, session.Lifetime(k.Spec.SessionLifetime), false)
 		ctxSetSession(r, session)
 	}
 

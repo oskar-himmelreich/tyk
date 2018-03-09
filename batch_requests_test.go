@@ -1,26 +1,20 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+	"io/ioutil"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
-)
 
-const batchTestDef = `{
-	"api_id": "987999",
-	"org_id": "default",
-	"auth": {"auth_header_name": "authorization"},
-	"version_data": {
-		"not_versioned": true,
-		"versions": {
-			"v1": {"name": "v1"}
-		}
-	},
-	"proxy": {
-		"listen_path": "/v1/",
-		"target_url": "` + testHttpAny + `"
-	},
-	"enable_batch_request_support": true
-}`
+	"github.com/TykTechnologies/tyk/apidef"
+	"github.com/TykTechnologies/tyk/config"
+	"github.com/TykTechnologies/tyk/test"
+)
 
 const testBatchRequest = `{
 	"requests": [
@@ -45,67 +39,140 @@ const testBatchRequest = `{
 	"suppress_parallel_execution": true
 }`
 
-func TestBatchSuccess(t *testing.T) {
-	spec := createSpecTest(t, batchTestDef)
+func TestBatch(t *testing.T) {
+	ts := newTykTestServer()
+	defer ts.Close()
 
-	batchHandler := BatchRequestHandler{API: spec}
+	buildAndLoadAPI(func(spec *APISpec) {
+		spec.Proxy.ListenPath = "/v1/"
+		spec.EnableBatchRequestSupport = true
+	})
 
-	req := testReq(t, "POST", "/vi/tyk/batch/", testBatchRequest)
+	ts.Run(t, []test.TestCase{
+		{Method: "POST", Path: "/v1/tyk/batch/", Data: `{"requests":[]}`, Code: 200, BodyMatch: "[]"},
+		{Method: "POST", Path: "/v1/tyk/batch/", Data: "malformed", Code: 400},
+		{Method: "POST", Path: "/v1/tyk/batch/", Data: testBatchRequest, Code: 200},
+	}...)
 
-	// Test decode
-	batchRequest, err := batchHandler.DecodeBatchRequest(req)
-	if err != nil {
-		t.Error("Decode batch request body failed: ", err)
+	resp, _ := ts.Do(test.TestCase{Method: "POST", Path: "/v1/tyk/batch/", Data: testBatchRequest})
+	if resp != nil {
+		body, _ := ioutil.ReadAll(resp.Body)
+		defer resp.Body.Close()
+
+		var batchResponse []map[string]json.RawMessage
+		if err := json.Unmarshal(body, &batchResponse); err != nil {
+			t.Fatal(err)
+		}
+
+		if len(batchResponse) != 3 {
+			t.Errorf("Length not match: %d", len(batchResponse))
+		}
+
+		if string(batchResponse[0]["relative_url"]) != `"get/?param1=this"` {
+			t.Error("Url order not match:", string(batchResponse[0]["relative_url"]))
+		}
 	}
-
-	if len(batchRequest.Requests) != 3 {
-		t.Error("Decoded batchRequest object doesn;t have the right number of requests, should be 3, is: ", len(batchRequest.Requests))
-	}
-
-	if !batchRequest.SuppressParallelExecution {
-		t.Error("Parallel execution flag should be True, is: ", batchRequest.SuppressParallelExecution)
-	}
-
-	// Test request constructions:
-
-	requestSet, err := batchHandler.ConstructRequests(batchRequest, false)
-	if err != nil {
-		t.Error("Batch request creation failed , request structure malformed")
-	}
-
-	if len(requestSet) != 3 {
-		t.Error("Request set length should be 3, is: ", len(requestSet))
-	}
-
-	if requestSet[0].URL.Host != "localhost:8080" {
-		t.Error("Request Host is wrong, is: ", requestSet[0].URL.Host)
-	}
-
-	if requestSet[0].URL.Path != "/v1/get/" {
-		t.Error("Request Path is wrong, is: ", requestSet[0].URL.Path)
-	}
-
 }
 
-func TestMakeRequest(t *testing.T) {
-	spec := createSpecTest(t, batchTestDef)
-	batchHandler := BatchRequestHandler{API: spec}
-
-	relURL := "/"
-	req, err := http.NewRequest("GET", testHttpGet, nil)
-	if err != nil {
-		t.Fatal(err)
+var virtBatchTest = `function batchTest (request, session, config) {
+	// Set up a response object
+	var response = {
+		Body: "",
+		Headers: {
+			"content-type": "application/json"
+		},
+		Code: 202
 	}
 
-	replyUnit := batchHandler.doRequest(req, relURL)
+	// Batch request
+	var batch = {
+		"requests": [
+			{
+				"method": "GET",
+				"headers": {},
+				"body": "",
+				"relative_url": "{upstream_URL}"
+			},
+			{
+				"method": "GET",
+				"headers": {},
+				"body": "",
+				"relative_url": "{upstream_URL}"
+			}
+		],
+		"suppress_parallel_execution": false
+	}
 
-	if replyUnit.RelativeURL != relURL {
-		t.Error("Relativce URL in reply is wrong")
+	var newBody = TykBatchRequest(JSON.stringify(batch))
+	var asJS = JSON.parse(newBody)
+	for (var i in asJS) {
+		if (asJS[i].code == 0){
+			response.Code = 500
+		}
 	}
-	if replyUnit.Code != 200 {
-		t.Error("Response reported a non-200 response")
+	return TykJsResponse(response, session.meta_data)
+}`
+
+func TestVirtualEndpointBatch(t *testing.T) {
+	_, _, combinedClientPEM, clientCert := genCertificate(&x509.Certificate{})
+	clientCert.Leaf, _ = x509.ParseCertificate(clientCert.Certificate[0])
+
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}))
+
+	// Mutual TLS protected upstream
+	pool := x509.NewCertPool()
+	pool.AddCert(clientCert.Leaf)
+	upstream.TLS = &tls.Config{
+		ClientAuth:         tls.RequireAndVerifyClientCert,
+		ClientCAs:          pool,
+		InsecureSkipVerify: true,
 	}
-	if len(replyUnit.Body) < 1 {
-		t.Error("Reply body is too short, should be larger than 1!")
-	}
+
+	upstream.StartTLS()
+	defer upstream.Close()
+
+	clientCertID, _ := CertificateManager.Add(combinedClientPEM, "")
+	defer CertificateManager.Delete(clientCertID)
+
+	virtBatchTest = strings.Replace(virtBatchTest, "{upstream_URL}", upstream.URL, 2)
+	defer upstream.Close()
+
+	upstreamHost := strings.TrimPrefix(upstream.URL, "https://")
+
+	config.Global.Security.Certificates.Upstream = map[string]string{upstreamHost: clientCertID}
+	defer resetTestConfig()
+
+	ts := newTykTestServer()
+	defer ts.Close()
+
+	buildAndLoadAPI(func(spec *APISpec) {
+		spec.Proxy.ListenPath = "/"
+		virtualMeta := apidef.VirtualMeta{
+			ResponseFunctionName: "batchTest",
+			FunctionSourceType:   "blob",
+			FunctionSourceURI:    base64.StdEncoding.EncodeToString([]byte(virtBatchTest)),
+			Path:                 "/virt",
+			Method:               "GET",
+		}
+		updateAPIVersion(spec, "v1", func(v *apidef.VersionInfo) {
+			v.UseExtendedPaths = true
+			v.ExtendedPaths = apidef.ExtendedPathsSet{
+				Virtual: []apidef.VirtualMeta{virtualMeta},
+			}
+		})
+	})
+
+	t.Run("Skip verification", func(t *testing.T) {
+		config.Global.ProxySSLInsecureSkipVerify = true
+
+		ts.Run(t, test.TestCase{Path: "/virt", Code: 202})
+	})
+
+	t.Run("Verification required", func(t *testing.T) {
+		config.Global.ProxySSLInsecureSkipVerify = false
+
+		ts.Run(t, test.TestCase{Path: "/virt", Code: 500})
+	})
+
 }

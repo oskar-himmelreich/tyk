@@ -224,15 +224,11 @@ func processSpec(spec *APISpec, apisByListen map[string]int,
 
 	if spec.UseOauth2 {
 		log.Debug("Loading OAuth Manager")
-		if !rpcEmergencyMode {
-			oauthManager := addOAuthHandlers(spec, subrouter)
-			log.Debug("-- Added OAuth Handlers")
+		oauthManager := addOAuthHandlers(spec, subrouter)
+		log.Debug("-- Added OAuth Handlers")
 
-			spec.OAuthManager = oauthManager
-			log.Debug("Done loading OAuth Manager")
-		} else {
-			log.Warning("RPC Emergency mode detected! OAuth APIs will not function!")
-		}
+		spec.OAuthManager = oauthManager
+		log.Debug("Done loading OAuth Manager")
 	}
 
 	enableVersionOverrides := false
@@ -304,6 +300,7 @@ func processSpec(spec *APISpec, apisByListen map[string]int,
 		mwAppendEnabled(&chainArray, &CertificateCheckMW{BaseMiddleware: baseMid})
 		mwAppendEnabled(&chainArray, &OrganizationMonitor{BaseMiddleware: baseMid})
 		mwAppendEnabled(&chainArray, &RateLimitForAPI{BaseMiddleware: baseMid})
+		mwAppendEnabled(&chainArray, &ValidateJSON{BaseMiddleware: baseMid})
 		mwAppendEnabled(&chainArray, &MiddlewareContextVars{BaseMiddleware: baseMid})
 		mwAppendEnabled(&chainArray, &VersionCheck{BaseMiddleware: baseMid})
 		mwAppendEnabled(&chainArray, &RequestSizeLimitMiddleware{baseMid})
@@ -435,11 +432,13 @@ func processSpec(spec *APISpec, apisByListen map[string]int,
 			mwAppendEnabled(&chainArray, &CoProcessMiddleware{baseMid, coprocess.HookType_PostKeyAuth, obj.Name, mwDriver})
 		}
 
+		mwAppendEnabled(&chainArray, &StripAuth{baseMid})
 		mwAppendEnabled(&chainArray, &KeyExpired{baseMid})
 		mwAppendEnabled(&chainArray, &AccessRightsCheck{baseMid})
 		mwAppendEnabled(&chainArray, &RateLimitForAPI{BaseMiddleware: baseMid})
 		mwAppendEnabled(&chainArray, &RateLimitAndQuotaCheck{baseMid})
 		mwAppendEnabled(&chainArray, &GranularAccessMiddleware{baseMid})
+		mwAppendEnabled(&chainArray, &ValidateJSON{BaseMiddleware: baseMid})
 		mwAppendEnabled(&chainArray, &TransformMiddleware{baseMid})
 		mwAppendEnabled(&chainArray, &TransformHeaders{BaseMiddleware: baseMid})
 		mwAppendEnabled(&chainArray, &URLRewriteMiddleware{BaseMiddleware: baseMid})
@@ -517,6 +516,23 @@ func (d *DummyProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	d.SH.ServeHTTP(w, r)
 }
 
+func loadGlobalApps(router *mux.Router) {
+	// we need to make a full copy of the slice, as loadApps will
+	// use in-place to sort the apis.
+	apisMu.RLock()
+	specs := make([]*APISpec, len(apiSpecs))
+	copy(specs, apiSpecs)
+	apisMu.RUnlock()
+	loadApps(specs, router)
+
+	if config.Global.NewRelic.AppName != "" {
+		log.WithFields(logrus.Fields{
+			"prefix": "main",
+		}).Info("Adding NewRelic instrumentation")
+		AddNewRelicInstrumentation(NewRelicApplication, router)
+	}
+}
+
 // Create the individual API (app) specs based on live configurations and assign middleware
 func loadApps(specs []*APISpec, muxer *mux.Router) {
 	hostname := config.Global.HostName
@@ -585,6 +601,15 @@ func loadApps(specs []*APISpec, muxer *mux.Router) {
 	for i, spec := range specs {
 		go func(spec *APISpec, i int) {
 			subrouter := hostRouters[spec.Domain]
+			if subrouter == nil {
+				log.WithFields(logrus.Fields{
+					"prefix": "main",
+					"domain": spec.Domain,
+					"api_id": spec.APIID,
+				}).Warning("Trying to load API with Domain when custom domains are disabled.")
+				subrouter = muxer
+			}
+
 			chainObj := processSpec(spec, apisByListen, redisStore, redisOrgStore, healthStore, rpcAuthStore, rpcOrgStore, subrouter)
 			chainObj.Index = i
 			chainChannel <- chainObj
@@ -636,11 +661,4 @@ func loadApps(specs []*APISpec, muxer *mux.Router) {
 	log.WithFields(logrus.Fields{
 		"prefix": "main",
 	}).Info("Initialised API Definitions")
-
-	if config.Global.SlaveOptions.UseRPC {
-		//log.Warning("TODO: PUT THE KEEPALIVE WATCHER BACK")
-		startRPCKeepaliveWatcher(rpcAuthStore)
-		startRPCKeepaliveWatcher(rpcOrgStore)
-	}
-
 }
